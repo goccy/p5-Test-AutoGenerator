@@ -97,8 +97,12 @@ static char *serializeObject(SV *v)
 		}
 		case TYPE_String: {
 			char *svalue = SvPVX(v);
+			fprintf(stderr, "svalue = [%s]\n", svalue);
             size_t len = strlen(svalue) + 1;
+			size_t buf_size = len;
             char sout[len];
+			char buf[buf_size + 2];
+			fprintf(stderr, "len = [%d]\n", len);
             char *ptr_in  = svalue;
             char *ptr_out = sout;
             iconv_t ic = iconv_open("EUC-JP", "UTF-8");
@@ -107,8 +111,8 @@ static char *serializeObject(SV *v)
             if (!svalue) {
                 write_cwb("undef");
             } else {
-                char buf[len + 2];
-                snprintf(buf, len + 2, "'%s'", sout);
+                snprintf(buf, buf_size + 2, "'%s'", sout);
+				fprintf(stderr, "buf = [%s]\n", buf);
                 write_cwb(buf);
             }
 			break;
@@ -622,34 +626,6 @@ static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 #define OP_NEXT() my_perl->Iop->op_next
 static int cf_stack_idx = 0;
 static CallFlow *cf_stack[MAX_CALLSTACK_SIZE] = {0};
-    /*
-    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
-    if (hasargs) {
-        if (args_stack_idx < 0) args_stack_idx = 0;
-        SV **mark = (my_perl->Istack_base - *my_perl->Imarkstack_ptr-1);
-        I32 args = my_perl->Istack_sp - mark - 1;
-        if (args < MAX_ARGS_NUM) {
-            int i = 0;
-            args_stack[args_stack_idx]->size = args;// - 1;
-            for (i = 1; i < args; i++) {
-                SV *arg = my_perl->Istack_base[i];
-                serializeObject(arg);
-                size_t size = strlen(cwb) + 1;
-                if (size == 1) continue;
-                args_stack[args_stack_idx]->v[i - 1] = malloc(size);
-                memcpy((char *)args_stack[args_stack_idx]->v[i - 1], cwb, size);
-                memset(cwb, 0, MAX_CWB_SIZE);
-                cwb_idx = 0;
-            }
-        }
-        if (args_stack_idx > MAX_CALLSTACK_SIZE) {
-            fprintf(stderr, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
-            fprintf(error_log, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
-            exit(EXIT_FAILURE);
-        }
-    }
-    */
-
 static OP *pp_subcall_profiler(pTHX_ SV *sub_sv, OP *op)
 {
     int saved_errno = errno;
@@ -659,10 +635,7 @@ static OP *pp_subcall_profiler(pTHX_ SV *sub_sv, OP *op)
     CV *callee_cv = NULL;
     char *callee_sub_name = NULL;
     char *caller_sub_name = NULL;
-//    dSP;
-//    SV *sub_sv = *SP;
     I32 this_subr_entry_ix = 0;
-    //OP *op = invoke_enter_sub(aTHX);
     if (op_type != OP_GOTO) {
         callee_cv = NULL;
     } else {
@@ -707,11 +680,6 @@ static OP *pp_subcall_profiler(pTHX_ SV *sub_sv, OP *op)
     if (!callee_cv) {
         callee_stash_name = CopSTASHPV(PL_curcop);
         fprintf(stderr, "callee_stash_name = [%s]\n", callee_stash_name);
-    } else {
-        //stash_name = HvNAME(CvSTASH(called_cv));
-		//char *called_sub_name = GvNAME(CvGV(called_cv));
-        //fprintf(stderr, "called_stash_name = [%s]\n", stash_name);
-        //fprintf(stderr, "called_sub_name = [%s]\n", called_sub_name);
     }
     CV *caller_cv = current_cv(aTHX_ cxstack_ix-1, NULL);
     if (caller_cv == PL_main_cv || !caller_cv) {
@@ -765,7 +733,6 @@ static OP *pp_subcall_profiler(pTHX_ SV *sub_sv, OP *op)
 		if (items > 1) {
 			is_list = true;
 			write_cwb("(");
-            //cf_stack_idx++;
 		}
 		for (i = 1 - items; 1 > i; i++) {
 			serializeObject(sp[i]);//descending order
@@ -889,7 +856,6 @@ static OP *record_return_value(pTHX)
 		if (items > 1) {
 			is_list = true;
 			write_cwb("(");
-            cf_stack_idx++;
 		}
 		for (i = 1 - items; 1 > i; i++) {
             fprintf(stderr, "sp[i] = %p\n", sp[i]);
@@ -931,7 +897,6 @@ BREAK:;
 	memset(cwb, 0, MAX_CWB_SIZE);
 	cwb_idx = 0;
     fprintf(stderr, "=========================\n");
-    cf_stack_idx--;
     return my_perl->Iop->op_next;
 }
 
@@ -959,6 +924,11 @@ OP *hook_entersub(pTHX_ OP *o)
 	return o;
 }
 
+OP *hook_ret(pTHX)
+{
+	cf_stack_idx--;
+	return my_perl->Iop->op_next;
+}
 
 MODULE = AutoTest		PACKAGE = AutoTest
 PROTOTYPES: ENABLE
@@ -970,6 +940,7 @@ CODE:
     error_log = fopen("/tmp/auto_test_error_log", "w");
     enter_sub = PL_check[OP_ENTERSUB];
 	PL_check[OP_ENTERSUB] = hook_entersub;
+	PL_ppaddr[OP_RETURN] = hook_ret;
     //invoke_enter_sub = PL_ppaddr[OP_ENTERSUB];
     //PL_ppaddr[OP_ENTERSUB] = pp_subcall_profiler;
     //PL_ppaddr[OP_ENTERSUB] = hook_invoke_entersub;
