@@ -85,7 +85,7 @@ typedef struct _Method {
 	CallFlow *cfs;
 	struct _Method *next;
 	void (*addCallFlow)(struct _Method *mtd, CallFlow *cf);
-	void (*setArgs)(struct _Method *mtd, Args *args);
+	void (*setArgs)(struct _Method *mtd, char *args);
 } Method;
 
 typedef struct _Package {

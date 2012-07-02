@@ -43,10 +43,14 @@ static void write_cwb(char *buf)
 	}
 }
 
+#ifdef SvRV
+#undef SvRV
+#define SvRV(sv) ((sv)->sv_u.svu_rv)
+#endif
+#include <iconv.h>
+
 static char *serializeObject(SV *v)
 {
-    ENTER;
-    SAVETMPS;
 	char buf[32] = {0};
 	bool is_reference = false;
 	if (SvROK(v)) {
@@ -78,25 +82,35 @@ static char *serializeObject(SV *v)
 	} else {
 		switch (SvTYPE(v)) {
 		case TYPE_Int: case SVt_PVIV: {
-			int ivalue = SvIV(v);
+			int ivalue = SvIVX(v);
 			snprintf(buf, 32, "%d", ivalue);
 			write_cwb(buf);
 			memset(buf, 0, 32);
 			break;
 		}
 		case TYPE_Double: {
-			double dvalue = SvNV(v);
+			double dvalue = SvNVX(v);
 			snprintf(buf, 32, "%f", dvalue);
 			write_cwb(buf);
 			memset(buf, 0, 32);
 			break;
 		}
 		case TYPE_String: {
-			char *svalue = SvPV_nolen(v);
-			size_t len = strlen(svalue);
-			char buf[len + 3];
-			snprintf(buf, len + 3, "'%s'", svalue);
-			write_cwb(buf);
+			char *svalue = SvPVX(v);
+            size_t len = strlen(svalue) + 1;
+            char sout[len];
+            char *ptr_in  = svalue;
+            char *ptr_out = sout;
+            iconv_t ic = iconv_open("EUC-JP", "UTF-8");
+            iconv(ic, &ptr_in, &len, &ptr_out, &len);
+            iconv_close(ic);
+            if (!svalue) {
+                write_cwb("undef");
+            } else {
+                char buf[len + 2];
+                snprintf(buf, len + 2, "'%s'", sout);
+                write_cwb(buf);
+            }
 			break;
 		}
 		case TYPE_Array: {
@@ -156,8 +170,6 @@ static char *serializeObject(SV *v)
 		}
 	}
 BREAK:;
-	FREETMPS;
-    LEAVE;
 	return cwb;
 }
 
@@ -175,10 +187,10 @@ static CallFlow *new_CallFlow(char *from_stash, char *from_subname,
 {
 	CallFlow *cf = malloc(sizeof(CallFlow));
 	memset(cf, 0, sizeof(CallFlow));
-	size_t from_stash_size = strlen(from_stash) + 1;
-	size_t from_subname_size = strlen(from_subname) + 1;
-	size_t to_stash_size = strlen(to_stash) + 1;
-	size_t to_subname_size = strlen(to_subname) + 1;
+	size_t from_stash_size = (from_stash) ? strlen(from_stash) + 1 : 0;
+	size_t from_subname_size = (from_subname) ? strlen(from_subname) + 1 : 0;
+	size_t to_stash_size = (to_stash) ? strlen(to_stash) + 1 : 0;
+	size_t to_subname_size = (to_subname) ? strlen(to_subname) + 1 : 0;
 	cf->from_stash = (const char *)malloc(from_stash_size);
 	memcpy((char *)cf->from_stash, from_stash, from_stash_size);
 	cf->from = (const char *)malloc(from_subname_size);
@@ -231,20 +243,21 @@ static void Method_addCallFlow(Method *mtd, CallFlow *cf)
 	}
 }
 
-static void Method_setArgs(Method *mtd, Args *args)
+static void Method_setArgs(Method *mtd, char *args)
 {
-	if (args->size > MAX_ARGS_NUM) {
-		fprintf(stderr, "ERROR!!: args num [%d] > %d\n", args->size, MAX_ARGS_NUM);
-		fprintf(error_log, "ERROR!!: args num [%d] > %d\n", args->size, MAX_ARGS_NUM);
-		exit(EXIT_FAILURE);
-	}
-	mtd->args = malloc(sizeof(char *) * args->size);
-	memset(mtd->args, 0, sizeof(char *) * args->size);
-	int i = (match((char *)mtd->subname, "new")) ? 1 : 0;
-	for (; i < args->size; i++) {
-		mtd->args[i] = args->v[i];
-	}
-    mtd->args_size = args->size - 1;
+//	if (args->size > MAX_ARGS_NUM) {
+//		fprintf(stderr, "ERROR!!: args num [%d] > %d\n", args->size, MAX_ARGS_NUM);
+//		fprintf(error_log, "ERROR!!: args num [%d] > %d\n", args->size, MAX_ARGS_NUM);
+//		exit(EXIT_FAILURE);
+//	}
+	mtd->args = malloc(sizeof(char *) * 1);//args->size);
+	memset(mtd->args, 0, sizeof(char *) * 1);//args->size);
+//	int i = (mtd->subname && match((char *)mtd->subname, "new")) ? 1 : 0;
+//	for (; i < args->size; i++) {
+//		mtd->args[i] = args->v[i];
+//	}
+    mtd->args[0] = args;
+    mtd->args_size = 1;//args->size - 1;
 }
 
 static Method *new_Method(const char *name, const char *stash, const char *subname)
@@ -389,7 +402,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
             Method *mtds = pkg->mtds;
             for (; mtds; mtds = mtds->next) {
                 Method *mtd = mtds;
-                const char *path = tcg->getLibraryPath(tcg, mtd->stash);
+                const char *path = (mtd->stash) ? tcg->getLibraryPath(tcg, mtd->stash) : NULL;
                 if (path && !pkg->existsLibrary(pkg, path)) {
                     pkg->addLibraryPath(pkg, path);
                 }
@@ -415,7 +428,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
 		Method *mtds = pkgs->mtds;
 		for (; mtds; mtds = mtds->next) {
 			//fprintf(stderr, "mtds->name = [%s]\n", mtds->name);
-			if (match((char *)mtds->subname, "main")) {
+			if (mtds->subname && match((char *)mtds->subname, "main")) {
 				i++; continue;
 			}
 			fprintf(fp, "sub test_%03d_%s {\n", i, mtds->subname);
@@ -430,7 +443,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
 				write_space(fp, 8);
 				fprintf(fp, "});\n");
 			}
-			if (match((char *)mtds->stash, "main")) {
+			if (mtds->stash && match((char *)mtds->stash, "main")) {
 				write_space(fp, 4);
 				if (mtds->ret_type == TYPE_List) {
 					fprintf(fp, "my @ret = %s(", mtds->subname);
@@ -450,7 +463,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
 				for (j = 0; j < mtds->args_size; j++) {
                     if (!mtds->args[j]) continue;
 					fprintf(fp, "%s", mtds->args[j]);
-					if (mtds->args[j + 1]) fprintf(fp, ", ");
+					//if (mtds->args[j + 1]) fprintf(fp, ", ");
 				}
 			}
 			fprintf(fp, ");\n");
@@ -520,6 +533,65 @@ TestCodeGenerator *new_TestCodeGenerator(void)
 }
 
 static OP *(*enter_sub)(pTHX_ OP *op) = NULL;
+static OP *(*invoke_enter_sub)(pTHX) = NULL;
+static OP *(*invoke_leave_sub)(pTHX) = NULL;
+
+static CV *resolve_sub_to_cv(pTHX_ SV *sv, GV **subname_gv_ptr)
+{
+    GV *dummy_gv;
+    HV *stash;
+    CV *cv;
+    if (!subname_gv_ptr) {
+        subname_gv_ptr = &dummy_gv;
+    } else {
+        *subname_gv_ptr = Nullgv;
+    }
+    switch (SvTYPE(sv)) {
+    default:
+        if (!SvROK(sv)) {
+            char *sym;
+            if (sv == &PL_sv_yes) {           /* unfound import, ignore */
+                return NULL;
+            }
+            if (SvGMAGICAL(sv)) {
+                mg_get(sv);
+                if (SvROK(sv)) goto got_rv;
+                sym = SvPOKp(sv) ? SvPVX(sv) : Nullch;
+            } else {
+                sym = SvPVX(sv);
+            }
+            if (!sym) return NULL;
+            if (PL_op->op_private & HINT_STRICT_REFS) return NULL;
+            cv = get_cv(sym, TRUE);
+            break;
+        }
+    got_rv:;
+        {
+            SV **sp = &sv;                    /* Used in tryAMAGICunDEREF macro. */
+            tryAMAGICunDEREF(to_cv);
+        }
+        cv = (CV*)SvRV(sv);
+        if (SvTYPE(cv) == SVt_PVCV)
+            break;
+        /* FALL THROUGH */
+    case SVt_PVHV:
+    case SVt_PVAV:
+        return NULL;
+    case SVt_PVCV:
+        cv = (CV*)sv;
+        break;
+    case SVt_PVGV:
+        if (!(isGV_with_GP(sv) && (cv = GvCVu((GV*)sv))))
+            cv = sv_2cv(sv, &stash, subname_gv_ptr, FALSE);
+        if (!cv)                              /* would autoload in this situation */
+            return NULL;
+        break;
+    }
+    if (cv && !*subname_gv_ptr && CvGV(cv) && isGV_with_GP(CvGV(cv))) {
+        *subname_gv_ptr = CvGV(cv);
+    }
+    return cv;
+}
 
 static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 {
@@ -548,62 +620,128 @@ static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 }
 
 #define OP_NEXT() my_perl->Iop->op_next
+static int cf_stack_idx = 0;
+static CallFlow *cf_stack[MAX_CALLSTACK_SIZE] = {0};
+    /*
+    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
+    if (hasargs) {
+        if (args_stack_idx < 0) args_stack_idx = 0;
+        SV **mark = (my_perl->Istack_base - *my_perl->Imarkstack_ptr-1);
+        I32 args = my_perl->Istack_sp - mark - 1;
+        if (args < MAX_ARGS_NUM) {
+            int i = 0;
+            args_stack[args_stack_idx]->size = args;// - 1;
+            for (i = 1; i < args; i++) {
+                SV *arg = my_perl->Istack_base[i];
+                serializeObject(arg);
+                size_t size = strlen(cwb) + 1;
+                if (size == 1) continue;
+                args_stack[args_stack_idx]->v[i - 1] = malloc(size);
+                memcpy((char *)args_stack[args_stack_idx]->v[i - 1], cwb, size);
+                memset(cwb, 0, MAX_CWB_SIZE);
+                cwb_idx = 0;
+            }
+        }
+        if (args_stack_idx > MAX_CALLSTACK_SIZE) {
+            fprintf(stderr, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
+            fprintf(error_log, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
+            exit(EXIT_FAILURE);
+        }
+    }
+    */
 
-OP *record_sub_info(pTHX)
+static OP *pp_subcall_profiler(pTHX_ SV *sub_sv, OP *op)
 {
-#ifdef dVAR
-    dVAR; dXSARGS;
-#else
-    dXSARGS;
-#endif
-	if (args_stack_idx > 0) args_stack_idx--;
-	CV *caller_cv = current_cv(aTHX_ cxstack_ix+1, NULL);
-    //fprintf(stderr, "cxstack_ix = [%d]\n", cxstack_ix);
-	//CV *called_cv = current_cv(aTHX_ cxstack_ix, NULL);//cxstack[cxstack_ix].blk_sub.cv;
-    CV *called_cv = cxstack[cxstack_ix].blk_sub.cv;
-	char *caller_stash_name = NULL;
-	char *caller_sub_name = NULL;
-	char *called_stash_name = NULL;
-	char *called_sub_name = NULL;
-	if (called_cv) {
+    int saved_errno = errno;
+    COP *prev_cop = PL_curcop;
+    OP *next_op = PL_op->op_next;
+    OPCODE op_type = ((opcode) PL_op->op_type == OP_GOTO) ? (opcode) PL_op->op_type : OP_ENTERSUB;
+    CV *callee_cv = NULL;
+    char *callee_sub_name = NULL;
+    char *caller_sub_name = NULL;
+//    dSP;
+//    SV *sub_sv = *SP;
+    I32 this_subr_entry_ix = 0;
+    //OP *op = invoke_enter_sub(aTHX);
+    if (op_type != OP_GOTO) {
+        callee_cv = NULL;
+    } else {
+        SvREFCNT_inc(sub_sv);
+        callee_cv = (CV*)SvRV(sub_sv);
+        SETERRNO(saved_errno, 0);
+        SvREFCNT_dec(sub_sv);
+    }
+    char *caller_stash_name = NULL;
+    char *callee_stash_name = NULL;
+    const char *is_xs = NULL;
+    if (op_type == OP_GOTO) {
+        is_xs = (CvISXSUB(callee_cv)) ? "xsub" : NULL;
+    } else {
+        if (op != next_op) {
+            callee_cv = cxstack[cxstack_ix].blk_sub.cv;
+            is_xs = NULL;
+            fprintf(stderr, "hoge\n");
+        } else {
+            GV *gv = NULL;
+            callee_cv = resolve_sub_to_cv(aTHX_ sub_sv, &gv);
+            if (!callee_cv && gv) {
+                callee_stash_name = HvNAME(GvSTASH(gv));
+                callee_sub_name = GvNAME(CvGV(callee_cv));
+                fprintf(stderr, "callee_stash_name = [%s]\n", callee_stash_name);
+                fprintf(stderr, "callee_sub_name = [%s]\n", callee_sub_name);
+            }
+            is_xs = "xsub";
+            fprintf(stderr, "fuga\n");
+        }
+    }
+    if (callee_cv && CvGV(callee_cv)) {
+        GV *gv = CvGV(callee_cv);
+        if (SvTYPE(gv) == SVt_PVGV && GvSTASH(gv)) {
+            callee_stash_name = HvNAME(GvSTASH(gv));
+            callee_sub_name = GvNAME(CvGV(callee_cv));
+            fprintf(stderr, "callee_stash_name = [%s]\n", callee_stash_name);
+            fprintf(stderr, "callee_sub_name = [%s]\n", callee_sub_name);
+        }
+    }
+    const char *what = (is_xs) ? is_xs : "sub";
+    if (!callee_cv) {
+        callee_stash_name = CopSTASHPV(PL_curcop);
+        fprintf(stderr, "callee_stash_name = [%s]\n", callee_stash_name);
+    } else {
+        //stash_name = HvNAME(CvSTASH(called_cv));
+		//char *called_sub_name = GvNAME(CvGV(called_cv));
+        //fprintf(stderr, "called_stash_name = [%s]\n", stash_name);
+        //fprintf(stderr, "called_sub_name = [%s]\n", called_sub_name);
+    }
+    CV *caller_cv = current_cv(aTHX_ cxstack_ix-1, NULL);
+    if (caller_cv == PL_main_cv || !caller_cv) {
+        caller_stash_name = "main";
+        caller_sub_name = "main";
+    } else {
+        HV *stash_hv = NULL;
         GV *gv = CvGV(caller_cv);
-        if (!gv) return OP_NEXT();
-		caller_stash_name = HvNAME(GvSTASH(gv));//CvGV(caller_cv)));
-		caller_sub_name = GvNAME(CvGV(caller_cv));
-        if (match(caller_sub_name, "import")) return OP_NEXT();
-		if (SvTYPE(called_cv) != TYPE_Code) {
-			//fprintf(stderr, "not code reference\n");
-			return OP_NEXT();
-		}
-        gv = CvGV(called_cv);
-        if (!gv) return OP_NEXT();
-		called_stash_name = HvNAME(GvSTASH(gv));
-		called_sub_name = GvNAME(CvGV(called_cv));
-		caller_stash_name = HvNAME(GvSTASH(CvGV(caller_cv)));
-		caller_sub_name = GvNAME(CvGV(caller_cv));
-	} else {
-		called_stash_name = "main";
-		called_sub_name = "main";
-		caller_stash_name = HvNAME(GvSTASH(CvGV(caller_cv)));
-		caller_sub_name = GvNAME(CvGV(caller_cv));
-	}
-	size_t called_stash_size = strlen(called_stash_name) + 1;
-	size_t caller_stash_size = strlen(caller_stash_name) + 1;
-	size_t called_subname_size = strlen(called_sub_name) + 1;
-	size_t caller_subname_size = strlen(caller_sub_name) + 1;
-	size_t called_name_size = called_stash_size + 2 + called_subname_size;
-	size_t caller_name_size = caller_stash_size + 2 + caller_subname_size;
-	char *called_name = (char *)malloc(called_name_size);
-	char *caller_name = (char *)malloc(caller_name_size);
-	snprintf(called_name, called_name_size, "%s::%s", called_stash_name, called_sub_name);
-	snprintf(caller_name, caller_name_size, "%s::%s", caller_stash_name, caller_sub_name);
-	CallFlow *cf = new_CallFlow(called_stash_name, called_sub_name,
-								caller_stash_name, caller_sub_name);
+        GV *egv = GvEGV(gv);
+        if (!egv) gv = egv;
+        if (gv && (stash_hv = GvSTASH(gv))) {
+            caller_sub_name = GvNAME(CvGV(caller_cv));
+            caller_stash_name = HvNAME(CvSTASH(caller_cv));
+            fprintf(stderr, "caller_stash_name = [%s]\n", HvNAME(CvSTASH(caller_cv)));
+            fprintf(stderr, "caller_sub_name = [%s]\n", caller_sub_name);
+        }
+    }
+    if (!callee_sub_name) callee_sub_name = "main";
+    SETERRNO(saved_errno, 0);
+    dSP;
+    sp = my_perl->Istack_sp;
+    SV **mark = my_perl->Istack_base - *my_perl->Imarkstack_ptr-1;
+    I32 items = my_perl->Istack_sp - mark -1;
+    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
 	const char *use_name = NULL;
 	bool is_list = false;
-	if (match((char *)cf->from, "BEGIN")) {
-		use_name = args_stack[args_stack_idx]->v[0] + 1 /*cut [']*/;
-        if (!use_name) return OP_NEXT();
+	if (caller_sub_name && match((char *)caller_sub_name, "BEGIN")) {
+        if (!args_stack[args_stack_idx]->v[0]) return op;
+        use_name = args_stack[args_stack_idx]->v[0] + 1; //cut ['];
+        if (!use_name) return op;
         ((char *)use_name)[strlen(use_name) - 1] = '\0';
         if (!tcg->existsLibrary(tcg, use_name)) {
             fprintf(stderr, "use_name = [%s]\n", use_name);
@@ -613,17 +751,21 @@ OP *record_sub_info(pTHX)
             tcg->libs[tcg->lib_num] = lib;
             tcg->lib_num++;
         }
-        return OP_NEXT();
-	} else if (!sp[0] || !SvOK(sp[0])) {
-		//fprintf(stderr, "return void function\n");
-		return OP_NEXT();
-	} else if (items < 0) {
+        fprintf(stderr, "==============END===============\n");
+        return op;
+	} else if (callee_sub_name && (match(callee_sub_name, "BEGIN") ||
+                                   match(callee_sub_name, "export") || match(callee_sub_name, "import") ||
+                                   match(caller_sub_name, "export") || match(caller_sub_name, "import"))) {
+        fprintf(stderr, "=========================\n");
+        return op;
+    } else if (hasargs && items < 0) {
 		serializeObject(sp[0]);
-	} else {
+	} else if (hasargs) {
 		int i = 0;
 		if (items > 1) {
 			is_list = true;
 			write_cwb("(");
+            //cf_stack_idx++;
 		}
 		for (i = 1 - items; 1 > i; i++) {
 			serializeObject(sp[i]);//descending order
@@ -633,12 +775,23 @@ OP *record_sub_info(pTHX)
 		}
 		if (items > 1) write_cwb(")");
 	}
-	cf->setReturnValue(cf, cwb);
-	if (is_list) {
-		cf->ret_type = TYPE_List;
-	} else {
-		cf->ret_type = (SvROK(sp[0])) ? SvTYPE(SvRV(sp[0])) : SvTYPE(sp[0]);
-	}
+    size_t size = strlen(cwb) + 1;
+	char *args = malloc(size);
+	memcpy(args, cwb, size);
+	size_t callee_stash_size = strlen(callee_stash_name) + 1;
+	size_t caller_stash_size = (caller_stash_name) ? strlen(caller_stash_name) + 1 : 0;
+	size_t callee_subname_size = strlen(callee_sub_name) + 1;
+	size_t caller_subname_size = (caller_sub_name) ? strlen(caller_sub_name) + 1 : 0;
+	size_t callee_name_size = callee_stash_size + 2 + callee_subname_size;
+	size_t caller_name_size = caller_stash_size + 2 + caller_subname_size;
+	char *callee_name = (char *)malloc(callee_name_size);
+	char *caller_name = (char *)malloc(caller_name_size);
+	snprintf(callee_name, callee_name_size, "%s::%s", callee_stash_name, callee_sub_name);
+	snprintf(caller_name, caller_name_size, "%s::%s", caller_stash_name, caller_sub_name);
+	CallFlow *cf = new_CallFlow(caller_stash_name, caller_sub_name,
+								callee_stash_name, callee_sub_name);
+    fprintf(stderr, "cwb = [%s]\n", cwb);
+    cf_stack[cf_stack_idx] = cf;
 	//fprintf(stderr, "cwb = [%s]\n", cwb);
 	memset(cwb, 0, MAX_CWB_SIZE);
 	cwb_idx = 0;
@@ -646,37 +799,41 @@ OP *record_sub_info(pTHX)
 	Package *to_pkg = NULL;
 	if (!tcg->pkgs) {
 		//fprintf(stderr, "init pkg_lists\n");
-		from_pkg = new_Package(called_stash_name);
+		from_pkg = new_Package(caller_stash_name);
 		tcg->addPackage(tcg, from_pkg);
-		if (!match(called_stash_name, caller_stash_name)) {
-			to_pkg = new_Package(caller_stash_name);
+		if (callee_stash_name && !match(caller_stash_name, callee_stash_name)) {
+			to_pkg = new_Package(callee_stash_name);
 			tcg->addPackage(tcg, to_pkg);
 		} else {
             to_pkg = from_pkg;
         }
 	} else {
-		from_pkg = tcg->getMatchedPackage(tcg, called_stash_name);
-		if (!from_pkg) {
-			//fprintf(stderr, "pkg is not exists\n");
-			from_pkg = new_Package(called_stash_name);
-			tcg->addPackage(tcg, from_pkg);
-		}
-		to_pkg = tcg->getMatchedPackage(tcg, caller_stash_name);
-		if (!to_pkg) {
-			//fprintf(stderr, "pkg is not exists\n");
-			to_pkg = new_Package(caller_stash_name);
-			tcg->addPackage(tcg, to_pkg);
-		}
+        if (caller_stash_name) {
+            from_pkg = tcg->getMatchedPackage(tcg, caller_stash_name);
+            if (!from_pkg) {
+                //fprintf(stderr, "pkg is not exists\n");
+                from_pkg = new_Package(caller_stash_name);
+                tcg->addPackage(tcg, from_pkg);
+            }
+        }
+        if (callee_stash_name) {
+            to_pkg = tcg->getMatchedPackage(tcg, callee_stash_name);
+            if (!to_pkg) {
+                //fprintf(stderr, "pkg is not exists\n");
+                to_pkg = new_Package(callee_stash_name);
+                tcg->addPackage(tcg, to_pkg);
+            }
+        }
 	}
-	Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, called_name);
-	Method *to_mtd = MethodList_getMatchedMethod(mtd_lists, caller_name);
+	Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, caller_name);
+	Method *to_mtd = MethodList_getMatchedMethod(mtd_lists, callee_name);
 	if (!from_mtd) {
 		//fprintf(stderr, "from_method is not exists\n");
         //fprintf(stderr, "called_stash_name = [%s]\n", called_stash_name);
-		from_mtd = new_Method(called_name, called_stash_name, called_sub_name);
+		from_mtd = new_Method(caller_name, caller_stash_name, caller_sub_name);
 		from_mtd->addCallFlow(from_mtd, cf);
 		MethodList_addMethod(mtd_lists, from_mtd);
-		from_pkg->addMethod(from_pkg, from_mtd);
+        if (from_pkg) from_pkg->addMethod(from_pkg, from_mtd);
 	} else {
 		//fprintf(stderr, "exists method\n");
 		from_mtd->addCallFlow(from_mtd, cf);
@@ -684,59 +841,115 @@ OP *record_sub_info(pTHX)
 	if (!to_mtd) {
 		//fprintf(stderr, "to_method is not exists\n");
         //fprintf(stderr, "caller_stash_name = [%s]\n", caller_stash_name);
-		to_mtd = new_Method(caller_name, caller_stash_name, caller_sub_name);
-		to_mtd->setArgs(to_mtd, args_stack[args_stack_idx]);
+		to_mtd = new_Method(callee_name, callee_stash_name, callee_sub_name);
+		to_mtd->setArgs(to_mtd, args);//args_stack[args_stack_idx]);
 		if (!to_mtd->ret) {
 			to_mtd->ret = cf->ret;
 			to_mtd->ret_type = cf->ret_type;
 		}
 		MethodList_addMethod(mtd_lists, to_mtd);
-		to_pkg->addMethod(to_pkg, to_mtd);
+		if (to_pkg) to_pkg->addMethod(to_pkg, to_mtd);
 	} else {
 		//fprintf(stderr, "exists method\n");
 		if (!to_mtd->ret) {
 			to_mtd->ret = cf->ret;
 			to_mtd->ret_type = cf->ret_type;
 		}
-		to_mtd->setArgs(to_mtd, args_stack[args_stack_idx]);
+		to_mtd->setArgs(to_mtd, args);//_stack[args_stack_idx]);
 	}
-	return OP_NEXT();
+    fprintf(stderr, "=========================\n");
+    return my_perl->Iop->op_next;
+}
+
+static OP *record_return_value(pTHX)
+{
+    SV **sp = my_perl->Istack_sp;
+    SV **mark = my_perl->Istack_base - *my_perl->Imarkstack_ptr-1;
+    I32 items = my_perl->Istack_sp - mark -1;
+	const char *use_name = NULL;
+	bool is_list = false;
+    fprintf(stderr, "cf_stack_idx = [%d]\n", cf_stack_idx);
+    if (cf_stack_idx < 0) cf_stack_idx = 0;
+    CallFlow *cf = cf_stack[cf_stack_idx];
+    if (!cf || (cf && cf->ret)) {
+        goto BREAK;
+    }
+	if (cf && cf->from && (match(cf->from, "BEGIN") ||
+                           match(cf->from, "export") || match(cf->from, "import") ||
+                           match(cf->to, "export") || match(cf->to, "import"))) {
+        fprintf(stderr, "========ESCAPE=======\n");
+        return my_perl->Iop->op_next;
+    } else if (!sp[0] || !SvOK(sp[0])) {
+		fprintf(stderr, "return void function\n");
+        return my_perl->Iop->op_next;
+	} else if (items < 0) {
+		serializeObject(sp[0]);
+	} else {
+		int i = 0;
+		if (items > 1) {
+			is_list = true;
+			write_cwb("(");
+            cf_stack_idx++;
+		}
+		for (i = 1 - items; 1 > i; i++) {
+            fprintf(stderr, "sp[i] = %p\n", sp[i]);
+			serializeObject(sp[i]);//descending order
+			if (i != 0) {
+				write_cwb(", ");
+			}
+		}
+		if (items > 1) write_cwb(")");
+	}
+	if (cf) {
+        cf->setReturnValue(cf, cwb);
+        if (is_list) {
+            cf->ret_type = TYPE_List;
+        } else {
+            cf->ret_type = (SvROK(sp[0])) ? SvTYPE(SvRV(sp[0])) : SvTYPE(sp[0]);
+        }
+        size_t size = strlen(cf->from_stash) + strlen(cf->from) + 4;
+        char from_buf[size];
+        snprintf(from_buf, size, "%s::%s", cf->from_stash, cf->from);
+        Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, from_buf);
+        size = strlen(cf->to_stash) + strlen(cf->to) + 4;
+        char to_buf[size];
+        snprintf(to_buf, size, "%s::%s", cf->to_stash, cf->to);
+        Method *to_mtd = MethodList_getMatchedMethod(mtd_lists, to_buf);
+        //fprintf(stderr, "from_mtd = [%p]\n", from_mtd);
+        //fprintf(stderr, "to_mtd = [%p]\n", to_mtd);
+        if (from_mtd && !from_mtd->ret) {
+            from_mtd->ret = cf->ret;
+            from_mtd->ret_type = cf->ret_type;
+        }
+        if (to_mtd && !to_mtd->ret) {
+            to_mtd->ret = cf->ret;
+            to_mtd->ret_type = cf->ret_type;
+        }
+    }
+BREAK:;
+	fprintf(stderr, "cwb = [%s]\n", cwb);
+	memset(cwb, 0, MAX_CWB_SIZE);
+	cwb_idx = 0;
+    fprintf(stderr, "=========================\n");
+    cf_stack_idx--;
+    return my_perl->Iop->op_next;
 }
 
 OP *insert_analyze_inst(pTHX)
 {
-    if (args_stack_idx < 0) args_stack_idx = 0;
-	SV **mark = (my_perl->Istack_base - *my_perl->Imarkstack_ptr-1);
-	I32 args = my_perl->Istack_sp - mark - 1;
-    if (args < MAX_ARGS_NUM) {
-        int i = 0;
-        args_stack[args_stack_idx]->size = args;
-        for (i = 1; i < args; i++) {
-            SV *arg = my_perl->Istack_base[i];
-            serializeObject(arg);
-            size_t size = strlen(cwb) + 1;
-            if (size == 1) continue;
-            args_stack[args_stack_idx]->v[i - 1] = malloc(size);
-            //fprintf(stderr, "cwb = [%s]\n", cwb);
-            memcpy((char *)args_stack[args_stack_idx]->v[i - 1], cwb, size);
-            memset(cwb, 0, MAX_CWB_SIZE);
-            cwb_idx = 0;
-        }
-    }
-    if (args_stack_idx > MAX_CALLSTACK_SIZE) {
-        fprintf(stderr, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
-        fprintf(error_log, "ERROR!!: args_stack_size > max callstack size %d\n", MAX_CALLSTACK_SIZE);
-        exit(EXIT_FAILURE);
-    }
-	args_stack_idx++;
-	OP *pc = my_perl->Iop;
+    OP *pc = my_perl->Iop;
 	OP *next = pc->op_next;
 	OP *func = (OP *)malloc(sizeof(OP));
 	memcpy(func, pc, sizeof(OP));
-	func->op_ppaddr = record_sub_info;
+	func->op_ppaddr = record_return_value;
 	pc->op_next = func;
 	func->op_next = next;
-	return PL_ppaddr[OP_ENTERSUB](aTHX);
+    dSP;
+    SV *sub_sv = *SP;
+    cf_stack_idx++;
+    OP *op = PL_ppaddr[OP_ENTERSUB](aTHX);
+    pp_subcall_profiler(aTHX_ sub_sv, op);
+    return op;
 }
 
 OP *hook_entersub(pTHX_ OP *o)
@@ -746,20 +959,9 @@ OP *hook_entersub(pTHX_ OP *o)
 	return o;
 }
 
+
 MODULE = AutoTest		PACKAGE = AutoTest
 PROTOTYPES: ENABLE
-
-void
-dump_vmcode()
-CODE:
-{
-	OP *pc = my_perl->Iop;
-	fprintf(stderr, "========= DUMP VMCODE =======\n");
-	for (; pc; pc = pc->op_next) {
-		fprintf(stderr, "[%s]\n", OP_NAME(pc));
-	}
-	fprintf(stderr, "=============================\n");
-}
 
 void
 import(klass, SV *flags = NULL)
@@ -768,11 +970,15 @@ CODE:
     error_log = fopen("/tmp/auto_test_error_log", "w");
     enter_sub = PL_check[OP_ENTERSUB];
 	PL_check[OP_ENTERSUB] = hook_entersub;
+    //invoke_enter_sub = PL_ppaddr[OP_ENTERSUB];
+    //PL_ppaddr[OP_ENTERSUB] = pp_subcall_profiler;
+    //PL_ppaddr[OP_ENTERSUB] = hook_invoke_entersub;
 	tcg = new_TestCodeGenerator();
 	int i, j;
 	for (i = 0; i < MAX_CALLSTACK_SIZE; i++) {
 		args_stack[i] = (Args *)malloc(sizeof(Args));
         memset(args_stack[i], 0, sizeof(Args));
+        args_stack[i]->size = 0;
 		for (j = 0; j < MAX_ARGS_NUM; j++) {
 			args_stack[i]->v[j] = NULL;
 		}
@@ -785,4 +991,16 @@ CODE:
 {
 	tcg->gen(tcg);
     fclose(error_log);
+}
+
+void
+dump_vmcode()
+CODE:
+{
+	OP *pc = my_perl->Iop;
+	fprintf(stderr, "========= DUMP VMCODE =======\n");
+	for (; pc; pc = pc->op_next) {
+		fprintf(stderr, "[%s]\n", OP_NAME(pc));
+	}
+	fprintf(stderr, "=============================\n");
 }
