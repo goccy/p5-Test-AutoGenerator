@@ -1019,6 +1019,11 @@ OP *hook_entersub(pTHX)
     return op;
 }
 
+OP *hook_ret(pTHX)
+{
+	cf_stack_idx--;
+	return my_perl->Iop->op_next;
+}
 
 MODULE = AutoTest     PACKAGE = AutoTest
 PROTOTYPES: ENABLE
