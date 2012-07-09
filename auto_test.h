@@ -73,7 +73,8 @@ typedef bool int
 #define MAX_CALLSTACK_SIZE 4096
 #define MAX_ARGS_NUM 64
 #define MAX_FILE_NAME_SIZE 64
-#define MAX_MACHINE_STACK_SIZE 20000
+#define MAX_MACHINE_STACK_SIZE 1000
+#define ERROR_TEXT "# [cannot trace] TOO LARGE SIZE"
 
 typedef struct String_ {
     size_t len;
@@ -90,21 +91,22 @@ typedef struct _CallFlow {
     struct _CallFlow *next;
     char *(*serializeObject)(struct _CallFlow *cf, SV *sv);
     void (*setReturnValue)(struct _CallFlow *cf, char *ret_value);
+    void (*free)(struct _CallFlow *cf);
 } CallFlow;
 
 typedef struct _Method {
     const char *stash;
     const char *subname;
     const char *name;
-    const char **args;
+    const char *args;
     const char *ret;
-    int args_size;
     PerlType ret_type;
     CallFlow *cfs;
     struct _Method *next;
     void (*addCallFlow)(struct _Method *mtd, CallFlow *cf);
     void (*setArgs)(struct _Method *mtd, char *args);
     bool (*existsCallFlow)(struct _Method *mtd, CallFlow *cf);
+    void (*free)(struct _Method *mtd);
 } Method;
 
 typedef struct _Package {
@@ -117,6 +119,7 @@ typedef struct _Package {
     void (*addMethod)(struct _Package *pkg, Method *mtd);
     bool (*existsLibrary)(struct _Package *pkg, const char *path);
     void (*addLibraryPath)(struct _Package *pkg, const char *path);
+    void (*free)(struct _Package *pkg);
 } Package;
 
 typedef struct _Library {
@@ -133,4 +136,5 @@ typedef struct _TestCodeGenerator {
     const char *(*getLibraryPath)(struct _TestCodeGenerator *tcg, const char *libname);
     bool (*existsLibrary)(struct _TestCodeGenerator *tcg, const char *libname);
     void (*gen)(struct _TestCodeGenerator *tcg);
+    void (*free)(struct _TestCodeGenerator *tcg);
 } TestCodeGenerator;

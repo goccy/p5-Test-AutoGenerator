@@ -12,9 +12,10 @@ static char *use_list[] = {
     NULL
 };
 static int serialize_stack = 0;
+static int memory_leaks = 0;
 
 //============================<<< UTIL API >>>====================================//
-static bool match(char *from, char *to)
+static bool match(const char *from, const char *to)
 {
     bool ret = false;
     size_t from_size = strlen(from) + 1;
@@ -23,6 +24,27 @@ static bool match(char *from, char *to)
         ret = true;
     }
     return ret;
+}
+
+static void *fastmalloc(size_t size)
+{
+    void *ret = malloc(size);
+    if (!ret) {
+        fprintf(stderr, "ERROR!!:cannot allocate memory\n");
+        exit(EXIT_FAILURE);
+    }
+    memset(ret, 0, size);
+    memory_leaks += size;
+    return ret;
+}
+
+static void fastfree(void *ptr, size_t size)
+{
+    if (ptr) {
+        free(ptr);
+        memory_leaks -= size;
+        ptr = NULL;
+    }
 }
 
 static void write_space(FILE *fp, int space_num)
@@ -53,7 +75,7 @@ static char *serializeObject(SV *v_)
     serialize_stack++;
     if (serialize_stack > MAX_MACHINE_STACK_SIZE) {
         serialize_stack = 0;
-        memset(cwb, 0, MAX_CWB_SIZE);
+        memset(cwb, 0, cwb_idx);
         cwb_idx = 0;
         longjmp(jbuf, 1);
     }
@@ -71,6 +93,7 @@ static char *serializeObject(SV *v_)
         }
         write_cwb("bless (");
         (is_reference) ? write_cwb("{") :  write_cwb("(");
+        /*
         XPVHV* xhv = (XPVHV*)SvANY(v);
         size_t key_n = xhv->xhv_keys;
         if (key_n > 0) {
@@ -101,7 +124,7 @@ static char *serializeObject(SV *v_)
                 if (entries[i + 1] != NULL) write_cwb(", ");//delim
             }
         }
-        /*
+        */
         HE **he = v->sv_u.svu_hash;
         if (he) {
             int i = 0;
@@ -114,7 +137,6 @@ static char *serializeObject(SV *v_)
                 if (he[i + 1] != NULL) write_cwb(", ");//delim
             }
         }
-        */
         (is_reference) ? write_cwb("}") :  write_cwb(")");
         write_cwb(", '");
         write_cwb(HvNAME(SvSTASH(v)));
@@ -242,29 +264,45 @@ BREAK:;
 static void CallFlow_setReturnValue(CallFlow *cf, char *ret_value)
 {
     size_t size = strlen(ret_value) + 1;
-    char *str = malloc(size);
+    char *str = fastmalloc(size);
     memcpy(str, ret_value, size);
     cf->ret = str;
+}
+
+static void CallFlow_free(CallFlow *cf)
+{
+    while (cf) {
+        fastfree((char *)cf->from_stash, strlen(cf->from_stash) + 1);
+        fastfree((char *)cf->from, strlen(cf->from) + 1);
+        fastfree((char *)cf->to_stash, strlen(cf->to_stash) + 1);
+        fastfree((char *)cf->to, strlen(cf->to) + 1);
+        if (cf->ret) {
+            fastfree((char *)cf->ret, strlen(cf->ret) + 1);
+        }
+        CallFlow *cur_cf = cf;
+        cf = cf->next;
+        fastfree(cur_cf, sizeof(CallFlow));
+    }
 }
 
 static CallFlow *new_CallFlow(char *from_stash, char *from_subname,
                               char *to_stash, char *to_subname)
 {
-    CallFlow *cf = malloc(sizeof(CallFlow));
-    memset(cf, 0, sizeof(CallFlow));
+    CallFlow *cf = fastmalloc(sizeof(CallFlow));
     size_t from_stash_size = (from_stash) ? strlen(from_stash) + 1 : 0;
     size_t from_subname_size = (from_subname) ? strlen(from_subname) + 1 : 0;
     size_t to_stash_size = (to_stash) ? strlen(to_stash) + 1 : 0;
     size_t to_subname_size = (to_subname) ? strlen(to_subname) + 1 : 0;
-    cf->from_stash = (const char *)malloc(from_stash_size);
+    cf->from_stash = (const char *)fastmalloc(from_stash_size);
     memcpy((char *)cf->from_stash, from_stash, from_stash_size);
-    cf->from = (const char *)malloc(from_subname_size);
+    cf->from = (const char *)fastmalloc(from_subname_size);
     memcpy((char *)cf->from, from_subname, from_subname_size);
-    cf->to_stash = (const char *)malloc(to_stash_size);
+    cf->to_stash = (const char *)fastmalloc(to_stash_size);
     memcpy((char *)cf->to_stash, to_stash, to_stash_size);
-    cf->to = (const char *)malloc(to_subname_size);
+    cf->to = (const char *)fastmalloc(to_subname_size);
     memcpy((char *)cf->to, to_subname, to_subname_size);
     cf->setReturnValue = CallFlow_setReturnValue;
+    cf->free = CallFlow_free;
     return cf;
 }
 
@@ -311,10 +349,7 @@ static void Method_addCallFlow(Method *mtd, CallFlow *cf)
 
 static void Method_setArgs(Method *mtd, char *args)
 {
-    mtd->args = malloc(sizeof(char *));
-    memset(mtd->args, 0, sizeof(char *));
-    mtd->args[0] = args;
-    mtd->args_size = 1;
+    mtd->args = args;
 }
 
 static bool Method_existsCallFlow(Method *mtd, CallFlow *cf)
@@ -322,10 +357,10 @@ static bool Method_existsCallFlow(Method *mtd, CallFlow *cf)
     bool ret = false;
     CallFlow *cfs = mtd->cfs;
     for (; cfs; cfs = cfs->next) {
-        if (match((char *)cfs->from_stash, (char *)cf->from_stash) &&
-            match((char *)cfs->from, (char *)cf->from) &&
-            match((char *)cfs->to_stash, (char *)cf->to_stash) &&
-            match((char *)cfs->to, (char *)cf->to)) {
+        if (match(cfs->from_stash, cf->from_stash) &&
+            match(cfs->from, cf->from) &&
+            match(cfs->to_stash, cf->to_stash) &&
+            match(cfs->to, cf->to)) {
             ret = true;
             break;
         }
@@ -333,16 +368,31 @@ static bool Method_existsCallFlow(Method *mtd, CallFlow *cf)
     return ret;
 }
 
+static void Method_free(Method *mtd)
+{
+    while (mtd) {
+        fastfree((char *)mtd->name, strlen(mtd->name) + 1);
+        if (mtd->args) fastfree((char *)mtd->args, strlen(mtd->args) + 1);
+        if (mtd->cfs) {
+            mtd->cfs->free(mtd->cfs);
+        }
+        Method *cur_mtd = mtd;
+        mtd = mtd->next;
+        fastfree(cur_mtd, sizeof(Method));
+    }
+}
+
 static Method *new_Method(const char *name, const char *stash, const char *subname)
 {
-    Method *mtd = malloc(sizeof(Method));
-    memset(mtd, 0, sizeof(Method));
+    Method *mtd = fastmalloc(sizeof(Method));
     mtd->name = name;
     mtd->stash = stash;
     mtd->subname = subname;
+    mtd->ret = NULL;
     mtd->addCallFlow = Method_addCallFlow;
     mtd->existsCallFlow = Method_existsCallFlow;
     mtd->setArgs = Method_setArgs;
+    mtd->free = Method_free;
     return mtd;
 }
 
@@ -367,7 +417,7 @@ static bool Package_existsLibrary(Package *pkg, const char *path)
     bool ret = false;
     int i = 0;
     for (; i < pkg->lib_num; i++) {
-        if (match((char *)pkg->lib_paths[i], (char *)path)) {
+        if (match(pkg->lib_paths[i], path)) {
             ret = true;
             break;
         }
@@ -382,23 +432,37 @@ static void Package_addLibraryPath(Package *pkg, const char *path)
     pkg->lib_num++;
 }
 
+static void Package_free(Package *pkg)
+{
+    int i;
+    while (pkg) {
+        if (pkg->mtds) {
+            pkg->mtds->free(pkg->mtds);
+        }
+        fastfree(pkg->lib_paths, sizeof(char *) * pkg->lib_num);
+        Package *cur_pkg = pkg;
+        pkg = pkg->next;
+        fastfree(cur_pkg, sizeof(Package));
+    }
+}
+
 static Package *new_Package(const char *pkg_name)
 {
-    Package *pkg = malloc(sizeof(Package));
-    memset(pkg, 0, sizeof(Package));
+    Package *pkg = fastmalloc(sizeof(Package));
     pkg->name = pkg_name;
     pkg->addMethod = Package_addMethod;
     pkg->existsLibrary = Package_existsLibrary;
     pkg->addLibraryPath = Package_addLibraryPath;
+    pkg->free = Package_free;
     return pkg;
 }
 
 //========================= Library Class API =================================//
 static Library *new_Library(char *path__)
 {
-    char *path_ = malloc(strlen(path__) + 1);
+    char *path_ = fastmalloc(strlen(path__) + 1);
     strcpy(path_, path__);
-    char *path = malloc(strlen(path_) + 1);
+    char *path = fastmalloc(strlen(path_) + 1);
     strcpy(path, path_);
     char *tk = strtok(path_, "::");
     char *name = NULL;
@@ -406,8 +470,7 @@ static Library *new_Library(char *path__)
         tk = strtok(NULL, "::");
         if (tk != NULL) name = tk;
     }
-    Library *lib = malloc(sizeof(Library));
-    memset(lib, 0, sizeof(Library));
+    Library *lib = fastmalloc(sizeof(Library));
     lib->path = path;
     lib->name = (name) ? name : path;
     return lib;
@@ -448,7 +511,7 @@ static const char *TestCodeGenerator_getLibraryPath(TestCodeGenerator *tcg, cons
     int i = 0;
     for (; i < tcg->lib_num; i++) {
         Library *lib = tcg->libs[i];
-        if (match((char *)lib->name, (char *)libname)) {
+        if (match(lib->name, libname)) {
             ret = lib->path;
             break;
         }
@@ -464,7 +527,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
     fprintf(stderr, "AutoTest gen : START\n");
     CHANGE_COLOR(WHITE);
     for (; pkgs; pkgs = pkgs->next) {
-        if (match((char *)pkgs->name, "main")) continue;
+        if (match(pkgs->name, "main")) continue;
         snprintf(filename, MAX_FILE_NAME_SIZE, "/tmp/%s.t", pkgs->name);
         FILE *fp;
         if ((fp = fopen(filename, "w")) == NULL) {
@@ -482,20 +545,17 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
             Method *mtds = pkg->mtds;
             for (; mtds; mtds = mtds->next) {
                 Method *mtd = mtds;
-                const char *path = (mtd->stash) ? tcg->getLibraryPath(tcg, mtd->stash) : NULL;
-                if (path && !pkg->existsLibrary(pkg, path)) {
-                    pkg->addLibraryPath(pkg, path);
+                if (!match(mtd->stash, "main") && !pkg->existsLibrary(pkg, mtd->stash)) {
+                    pkg->addLibraryPath(pkg, mtd->stash);
                 }
                 CallFlow *cfs = mtd->cfs;
                 for (; cfs; cfs = cfs->next) {
                     CallFlow *cf = cfs;
-                    path = tcg->getLibraryPath(tcg, cf->from_stash);
-                    if (path && !pkg->existsLibrary(pkg, path)) {
-                        pkg->addLibraryPath(pkg, path);
+                    if (!match(cf->from_stash, "main") && !pkg->existsLibrary(pkg, cf->from_stash)) {
+                        pkg->addLibraryPath(pkg, cf->from_stash);
                     }
-                    path = tcg->getLibraryPath(tcg, cf->to_stash);
-                    if (path && !pkg->existsLibrary(pkg, path)) {
-                        pkg->addLibraryPath(pkg, path);
+                    if (!match(cf->to_stash, "main") && !pkg->existsLibrary(pkg, cf->to_stash)) {
+                        pkg->addLibraryPath(pkg, cf->to_stash);
                     }
                 }
             }
@@ -508,7 +568,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
         Method *mtds = pkgs->mtds;
         for (; mtds; mtds = mtds->next) {
             //fprintf(stderr, "mtds->name = [%s]\n", mtds->name);
-            if (mtds->subname && match((char *)mtds->subname, "main")) {
+            if (mtds->subname && match(mtds->subname, "main")) {
                 i++; continue;
             }
             fprintf(fp, "sub test_%03d_%s {\n", i, mtds->subname);
@@ -519,17 +579,24 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
                 write_space(fp, 8);
                 fprintf(fp, "%s => sub {\n", cfs->to);
                 write_space(fp, 12);
-                fprintf(fp, "%s;\n", cfs->ret);
+                if (!cfs->ret) {
+                    fprintf(fp, "%s\n", ERROR_TEXT);
+                } else {
+                    fprintf(fp, "%s;\n", cfs->ret);
+                }
                 write_space(fp, 8);
                 fprintf(fp, "});\n");
             }
-            if (mtds->stash && match((char *)mtds->stash, "main")) {
+            if (mtds->stash && match(mtds->stash, "main")) {
                 write_space(fp, 4);
                 if (mtds->ret_type == TYPE_List) {
                     fprintf(fp, "my @ret = %s(", mtds->subname);
                 } else {
                     fprintf(fp, "my $ret = %s(", mtds->subname);
                 }
+            } else if (!mtds->ret) {
+                write_space(fp, 4);
+                fprintf(fp, "%s::%s(", mtds->stash, mtds->subname);
             } else {
                 write_space(fp, 4);
                 if (mtds->ret_type == TYPE_List) {
@@ -540,35 +607,34 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
             }
             int j = 0;
             if (mtds->args) {
-                for (j = 0; j < mtds->args_size; j++) {
-                    if (!mtds->args[j]) continue;
-                    fprintf(fp, "%s", mtds->args[j]);
-                    //if (mtds->args[j + 1]) fprintf(fp, ", ");
-                }
+                fprintf(fp, "%s", mtds->args);
             }
             fprintf(fp, ");\n");
-            switch (mtds->ret_type) {
-            case TYPE_Int: case TYPE_Double:
-                write_space(fp, 4);
-                fprintf(fp, "ok($ret, %s);\n", mtds->ret);
-                break;
-            case TYPE_String:
-                write_space(fp, 4);
-                fprintf(fp, "is($ret, %s);\n", mtds->ret);
-                break;
-            case TYPE_Hash: case TYPE_Array:
-            case TYPE_Code: case TYPE_Object:
-                write_space(fp, 4);
-                fprintf(fp, "is_deeply($ret, %s);\n", mtds->ret);
-                break;
-            case TYPE_List:
-                write_space(fp, 4);
-                ((char *)mtds->ret)[0] = '[';
-                ((char *)mtds->ret)[strlen(mtds->ret) - 1] = ']';
-                fprintf(fp, "is_deeply(\\@ret, %s);\n", mtds->ret);
-                break;
-            default:
-                break;
+            if (mtds->ret) {
+                switch (mtds->ret_type) {
+                case TYPE_Int: case TYPE_Double:
+                    write_space(fp, 4);
+                    fprintf(fp, "ok($ret, %s);\n", mtds->ret);
+                    break;
+                case TYPE_String:
+                    write_space(fp, 4);
+                    fprintf(fp, "is($ret, %s);\n", mtds->ret);
+                    break;
+                case TYPE_Hash: case TYPE_Array:
+                case TYPE_Code: case TYPE_Object:
+                    write_space(fp, 4);
+                    fprintf(fp, "is_deeply($ret, %s);\n", mtds->ret);
+                    break;
+                case TYPE_List:
+                    write_space(fp, 4);
+                    ((char *)mtds->ret)[0] = '[';
+                    ((char *)mtds->ret)[strlen(mtds->ret) - 1] = ']';
+                    fprintf(fp, "is_deeply(\\@ret, %s);\n", mtds->ret);
+                    break;
+                default:
+                    fprintf(fp, "ok($ret, %s);\n", mtds->ret);
+                    break;
+                }
             }
             fprintf(fp, "}\n");
             fprintf(fp, "\n");
@@ -592,7 +658,7 @@ static bool TestCodeGenerator_existsLibrary(TestCodeGenerator *tcg, const char *
     bool ret = false;
     int i = 0;
     for (; i < tcg->lib_num; i++) {
-        if (match((char *)tcg->libs[i]->name, (char *)name)) {
+        if (match(tcg->libs[i]->name, name)) {
             ret = true;
             break;
         }
@@ -600,15 +666,23 @@ static bool TestCodeGenerator_existsLibrary(TestCodeGenerator *tcg, const char *
     return ret;
 }
 
+static void TestCodeGenerator_free(TestCodeGenerator *tcg)
+{
+    if (tcg->pkgs) {
+        tcg->pkgs->free(tcg->pkgs);
+    }
+    fastfree(tcg, sizeof(TestCodeGenerator));
+}
+
 TestCodeGenerator *new_TestCodeGenerator(void)
 {
-    TestCodeGenerator *tcg = malloc(sizeof(TestCodeGenerator));
-    memset(tcg, 0, sizeof(TestCodeGenerator));
+    TestCodeGenerator *tcg = fastmalloc(sizeof(TestCodeGenerator));
     tcg->getMatchedPackage = TestCodeGenerator_getMatchedPackage;
     tcg->addPackage = TestCodeGenerator_addPackage;
     tcg->getLibraryPath = TestCodeGenerator_getLibraryPath;
     tcg->existsLibrary = TestCodeGenerator_existsLibrary;
     tcg->gen = TestCodeGenerator_gen;
+    tcg->free = TestCodeGenerator_free;
     return tcg;
 }
 
@@ -706,6 +780,41 @@ static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 //================================================================================//
 static CallFlow *cf_stack[MAX_CALLSTACK_SIZE] = {0};
 static bool xs_stack[MAX_CALLSTACK_SIZE] = {0};
+static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *callee_name)
+{
+    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
+    bool is_error = false;
+    if (hasargs) {
+        int i = 0;
+        AV *argarray = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
+        if (argarray && SvTYPE(argarray) == TYPE_Array) {
+            int argc = argarray->sv_any->xav_fill;//av_len((AV *)argarray);
+            //fprintf(stderr, "hasargs, [%d]\n", argc);
+            SV **a = argarray->sv_u.svu_array;
+            if (setjmp(jbuf) == 0) {
+                if (a) {
+                    for (i = 0; i <= argc; i++) {
+                        serializeObject(a[i]);
+                        if (i != argc) {
+                            write_cwb(", ");//delim
+                        }
+                    }
+                }
+            } else {
+                //CHANGE_COLOR(RED);
+                fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
+                //CHANGE_COLOR(WHITE);
+                fprintf(stderr, "%s => %s (args)\n", caller_name, callee_name);
+                is_error = true;
+            }
+        }
+    }
+    size_t size = strlen(cwb) + 1;
+    char *args = fastmalloc(size);
+    memcpy(args, cwb, size);
+    return args;
+}
+
 static void record_callflow(pTHX_ SV *sub_sv, OP *op)
 {
     int cxix = my_perl->Icurstackinfo->si_cxix;
@@ -767,80 +876,27 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
         }
     }
     if (!callee_sub_name) callee_sub_name = "main";
-    //fprintf(stderr, "caller_stash_name = [%s]\n", caller_stash_name);
-    //fprintf(stderr, "caller_sub_name = [%s]\n", caller_sub_name);
-    //fprintf(stderr, "callee_stash_name = [%s]\n", callee_stash_name);
-    //fprintf(stderr, "callee_sub_name = [%s]\n", callee_sub_name);
-    //fprintf(stderr, "ix = [%d]\n", cxix);
     SETERRNO(saved_errno, 0);
-    dSP;
-    sp = my_perl->Istack_sp;
-    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
-    const char *use_name = NULL;
-    bool is_list = false;
-    if (caller_sub_name && match((char *)caller_sub_name, "BEGIN")) {
-        use_name = caller_stash_name;
-        if (!tcg->existsLibrary(tcg, use_name)) {
-            Library *lib = new_Library((char *)use_name);
-            tcg->libs = (Library **)realloc(tcg->libs, sizeof(Library) * (tcg->lib_num + 1));
-            tcg->libs[tcg->lib_num] = lib;
-            tcg->lib_num++;
-        }
+    if (match(caller_sub_name, "BEGIN") || match(callee_sub_name, "BEGIN") ||
+        match(callee_sub_name, "export") || match(callee_sub_name, "import") ||
+        match(caller_sub_name, "export") || match(caller_sub_name, "import") || is_xs) {
         return;
-    } else if (callee_sub_name &&
-               (match(callee_sub_name, "BEGIN") ||
-                match(callee_sub_name, "export") || match(callee_sub_name, "import") ||
-                match(caller_sub_name, "export") || match(caller_sub_name, "import"))) {
-        return;
-    } else if (is_xs) {
-        return;
-    } else if (hasargs) {
-        int i = 0;
-        AV *argarray = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
-        if (argarray && SvTYPE(argarray) == TYPE_Array) {
-            int argc = argarray->sv_any->xav_fill;//av_len((AV *)argarray);
-            //fprintf(stderr, "hasargs, [%d]\n", argc);
-            SV **a = argarray->sv_u.svu_array;
-            if (setjmp(jbuf) == 0) {
-                if (a) {
-                    if (argc > 0) {
-                        //write_cwb("(");
-                    }
-                    for (i = 0; i <= argc; i++) {
-                        serializeObject(a[i]);
-                        if (i != argc) {
-                            write_cwb(", ");//delim
-                        }
-                    }
-                    if (argc > 0) {
-                        //write_cwb(")");
-                    }
-                }
-            } else {
-                //CHANGE_COLOR(RED);
-                fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
-                //CHANGE_COLOR(WHITE);
-                fprintf(stderr, "%s::%s => %s::%s (args)\n",
-                        caller_stash_name, caller_sub_name, callee_stash_name, callee_sub_name);
-            }
-        }
     }
-    size_t size = strlen(cwb) + 1;
-    char *args = malloc(size);
-    memcpy(args, cwb, size);
-    //fprintf(stderr, "ARGS = [%s]\n", args);
     size_t callee_stash_size = strlen(callee_stash_name) + 1;
     size_t caller_stash_size = (caller_stash_name) ? strlen(caller_stash_name) + 1 : 0;
     size_t callee_subname_size = strlen(callee_sub_name) + 1;
     size_t caller_subname_size = (caller_sub_name) ? strlen(caller_sub_name) + 1 : 0;
     size_t callee_name_size = callee_stash_size + 2 + callee_subname_size;
     size_t caller_name_size = caller_stash_size + 2 + caller_subname_size;
-    char *callee_name = (char *)malloc(callee_name_size);
-    char *caller_name = (char *)malloc(caller_name_size);
+    char *callee_name = (char *)fastmalloc(callee_name_size);
+    char *caller_name = (char *)fastmalloc(caller_name_size);
     snprintf(callee_name, callee_name_size, "%s::%s", callee_stash_name, callee_sub_name);
     snprintf(caller_name, caller_name_size, "%s::%s", caller_stash_name, caller_sub_name);
     CallFlow *cf = new_CallFlow(caller_stash_name, caller_sub_name,
                                 callee_stash_name, callee_sub_name);
+    //fprintf(stderr, "stack = [%d]\n", cxix);
+    //fprintf(stderr, "%s::%s => %s::%s\n", caller_name, callee_name);
+    char *args = get_serialized_argument(aTHX, cxix, caller_name, callee_name);
     cf_stack[cxix] = cf;
     xs_stack[cxix] = is_xs;
     Package *from_pkg = NULL;
@@ -881,6 +937,7 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
         if (!from_mtd->existsCallFlow(from_mtd, cf)) {
             from_mtd->addCallFlow(from_mtd, cf);
         }
+        //fastfree(caller_name, caller_name_size);
     }
     if (!to_mtd) {
         to_mtd = new_Method(callee_name, callee_stash_name, callee_sub_name);
@@ -890,13 +947,16 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
             to_mtd->ret_type = cf->ret_type;
         }
         MethodList_addMethod(mtd_lists, to_mtd);
-        if (to_pkg) to_pkg->addMethod(to_pkg, to_mtd);
+        if (to_pkg) {
+            to_pkg->addMethod(to_pkg, to_mtd);
+        }
     } else {
         if (!to_mtd->ret) {
             to_mtd->ret = cf->ret;
             to_mtd->ret_type = cf->ret_type;
         }
         to_mtd->setArgs(to_mtd, args);
+        //fastfree(callee_name, callee_name_size);
     }
 }
 
@@ -909,13 +969,11 @@ static void record_return_value(pTHX)
     bool is_list = false;
     CallFlow *cf = cf_stack[cxix];
     if (!cf || (cf && cf->ret)) return;
-    char *rvalue = (char *)malloc(2);
-    memset(rvalue, 0, 2);
     if (setjmp(jbuf) == 0) {
         if (cf && cf->from &&
-            (match((char *)cf->from, "BEGIN") ||
-             match((char *)cf->from, "export") || match((char *)cf->from, "import") ||
-             match((char *)cf->to, "export") || match((char *)cf->to, "import"))) {
+            (match(cf->from, "BEGIN") ||
+             match(cf->from, "export") || match(cf->from, "import") ||
+             match(cf->to, "export") || match(cf->to, "import"))) {
             return;
         } else if (!sp[0] || !SvOK(sp[0])) {
             return;
@@ -962,18 +1020,18 @@ static void record_return_value(pTHX)
     } else {
         cf->ret_type = (SvROK(sp[0])) ? SvTYPE(SvRV(sp[0])) : SvTYPE(sp[0]);
     }
-    size_t size = strlen(cf->from_stash) + strlen(cf->from) + 4;
-    char from_buf[size];
-    snprintf(from_buf, size, "%s::%s", cf->from_stash, cf->from);
-    Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, from_buf);
-    size = strlen(cf->to_stash) + strlen(cf->to) + 4;
+    //size_t size = strlen(cf->from_stash) + strlen(cf->from) + 4;
+    //char from_buf[size];
+    //snprintf(from_buf, size, "%s::%s", cf->from_stash, cf->from);
+    //Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, from_buf);
+    size_t size = strlen(cf->to_stash) + strlen(cf->to) + 4;
     char to_buf[size];
     snprintf(to_buf, size, "%s::%s", cf->to_stash, cf->to);
     Method *to_mtd = MethodList_getMatchedMethod(mtd_lists, to_buf);
-    if (from_mtd && !from_mtd->ret) {
+    //if (from_mtd && !from_mtd->ret) {
         //from_mtd->ret = cf->ret;
         //from_mtd->ret_type = cf->ret_type;
-    }
+    //}
     if (to_mtd && !to_mtd->ret) {
         to_mtd->ret = cf->ret;
         to_mtd->ret_type = cf->ret_type;
@@ -1019,11 +1077,6 @@ OP *hook_entersub(pTHX)
     return op;
 }
 
-OP *hook_ret(pTHX)
-{
-	cf_stack_idx--;
-	return my_perl->Iop->op_next;
-}
 
 MODULE = AutoTest     PACKAGE = AutoTest
 PROTOTYPES: ENABLE
@@ -1041,8 +1094,7 @@ CODE:
     //pp_goto = PL_ppaddr[OP_GOTO];
     //PL_ppaddr[OP_GOTO] = hook_goto;
     tcg = new_TestCodeGenerator();
-    cwb = (char *)malloc(MAX_CWB_SIZE);
-    memset(cwb, 0, MAX_CWB_SIZE);
+    cwb = (char *)fastmalloc(MAX_CWB_SIZE);
 }
 
 void
@@ -1056,6 +1108,11 @@ CODE:
     CHANGE_COLOR(SYAN);
     fprintf(stderr, "AutoTest gen: exit normaly.\n");
     CHANGE_COLOR(WHITE);
+    //tcg->free(tcg);
+    fastfree(cwb, MAX_CWB_SIZE);
+    if (memory_leaks > 0) {
+        fprintf(stderr, "memory_leaks = %d bytes\n", memory_leaks);
+    }
 }
 
 void
