@@ -26,6 +26,19 @@ static bool match(const char *from, const char *to)
     return ret;
 }
 
+static bool find(const char *targ, char c) {
+    bool ret = false;
+    size_t size = strlen(targ);
+    int i = 0;
+    for (i = 0; i < size; i++) {
+        if (targ[i] == c) {
+            ret = true;
+            break;
+        }
+    }
+    return ret;
+}
+
 static void *safe_malloc(size_t size)
 {
     void *ret = malloc(size);
@@ -47,9 +60,10 @@ static void safe_free(void *ptr, size_t size)
     }
 }
 
-static void write_space(FILE *fp, int space_num)
+static void write_space(FILE *fp, int space_num, bool comment_out_flag)
 {
     int i = 0;
+    if (comment_out_flag) fprintf(fp, "#"); 
     for (i = 0; i < space_num; i++) {
         fprintf(fp, " ");
     }
@@ -66,6 +80,50 @@ static inline void write_cwb(char *buf)
         memset(cwb, 0, MAX_CWB_SIZE);
         cwb_idx = 0;
         longjmp(jbuf, 1);
+    }
+}
+
+static char *serializeObject(SV *v);
+static void serializeHE(HE *he)
+{
+    char* key = he->hent_hek->hek_key;
+    size_t len = strlen(key) + 1;
+    char buf[len + 2];
+    memset(buf, 0, len + 2);
+    snprintf(buf, len + 2, "\"%s\"", key);
+    write_cwb(buf);
+    write_cwb(" => ");
+    SV *val = he->he_valu.hent_val;
+    serializeObject(val);
+}
+
+static void serializeHash(SV *v)
+{
+    XPVHV* xhv = (XPVHV*)SvANY(v);
+    size_t key_n = xhv->xhv_keys;
+    if (key_n > 0) {
+        size_t max_size = xhv->xhv_max;
+        HE *entries[key_n];
+        int i = 0;
+        int j = 0;
+        for (i = 0; i <= max_size; i++) {
+            HE *he = v->sv_u.svu_hash[i];
+            if (he) {
+                entries[j] = he;
+                j++;
+                HE *next = he->hent_next;
+                while (next) {
+                    entries[j] = next;
+                    next = next->hent_next;
+                    j++;
+                }
+            }
+        }
+        assert(j == key_n);
+        for (i = 0; i < key_n; i++) {
+            serializeHE(entries[i]);
+            if (i + 1 != key_n) write_cwb(", ");//delim
+        }
     }
 }
 
@@ -95,36 +153,7 @@ static char *serializeObject(SV *v_)
         }
         write_cwb("bless (");
         (is_reference) ? write_cwb("{") :  write_cwb("(");
-        XPVHV* xhv = (XPVHV*)SvANY(v);
-        size_t key_n = xhv->xhv_keys;
-        if (key_n > 0) {
-            size_t max_size = xhv->xhv_max;
-            HE *entries[key_n];
-            int i = 0;
-            int j = 0;
-            for (i = 0; i <= max_size; i++) {
-                HE *he = v->sv_u.svu_hash[i];
-                if (he) {
-                    entries[j] = he;
-                    j++;
-                    HE *next = he->hent_next;
-                    while (next) {
-                        entries[j] = next;
-                        next = next->hent_next;
-                        j++;
-                    }
-                }
-            }
-            assert(j == key_n);
-            for (i = 0; i < key_n; i++) {
-                char* key = entries[i]->hent_hek->hek_key;
-                write_cwb(key);
-                write_cwb(" => ");
-                SV *val = entries[i]->he_valu.hent_val;
-                serializeObject(val);
-                if (entries[i + 1] != NULL) write_cwb(", ");//delim
-            }
-        }
+        serializeHash(v);
         (is_reference) ? write_cwb("}") :  write_cwb(")");
         write_cwb(", '");
         write_cwb(HvNAME(SvSTASH(v)));
@@ -134,16 +163,44 @@ static char *serializeObject(SV *v_)
             //fprintf(stderr, "STILL REFERENCE\n");
         }
         switch (SvTYPE(v)) {
-        case TYPE_Int: case SVt_PVIV: {
+        case TYPE_Int: {
             int ivalue = SvIVX(v);
             snprintf(buf, 32, "%d", ivalue);
             write_cwb(buf);
             memset(buf, 0, 32);
             break;
         }
-        case TYPE_Double: case SVt_PVNV: {
+        case TYPE_PtrInt: {
+            char *ptr = v->sv_u.svu_pv;
+            if (ptr) {
+                snprintf(buf, 32, "%d", atoi(ptr));
+            } else {
+                snprintf(buf, 32, "0");
+            }
+            write_cwb(buf);
+            memset(buf, 0, 32);
+            break;
+        }
+        case TYPE_Double: {
             double dvalue = SvNVX(v);
             snprintf(buf, 32, "%f", dvalue);
+            write_cwb(buf);
+            memset(buf, 0, 32);
+            break;
+        }
+        case TYPE_PtrDouble: {
+            char *ptr = v->sv_u.svu_pv;
+            if (ptr) {
+                if (find(ptr, '.')) {
+                    snprintf(buf, 32, "%f", atof(ptr));
+                } else if (match(ptr, "")) {
+                    snprintf(buf, 32, "\"\"");
+                } else {
+                    snprintf(buf, 32, "%d", atoi(ptr));
+                }
+            } else {
+                snprintf(buf, 32, "''");
+            }
             write_cwb(buf);
             memset(buf, 0, 32);
             break;
@@ -154,13 +211,15 @@ static char *serializeObject(SV *v_)
                 size_t len = strlen(svalue) + 1;
                 size_t size = len;
                 char sout[size];
+                memset(sout, 0, size);
                 char *ptr_in  = svalue;
                 char *ptr_out = sout;
-                iconv_t ic = iconv_open("EUC-JP", "UTF-8");
+                iconv_t ic = iconv_open("EUC-JP", LOCALE);
                 iconv(ic, &ptr_in, &len, &ptr_out, &len);
                 iconv_close(ic);
                 char buf[size + 2];
-                snprintf(buf, size + 2, "'%s'", sout);
+                memset(buf, 0, size + 2);
+                snprintf(buf, size + 2, "\"%s\"", sout);
                 write_cwb(buf);
             } else {
                 write_cwb("''");
@@ -168,51 +227,26 @@ static char *serializeObject(SV *v_)
             break;
         }
         case TYPE_Array: {
-            (is_reference) ? write_cwb("[") :  write_cwb("(");
             int size = av_len((AV *)v);
             int i = 0;
             SV **a = v->sv_u.svu_array;
             if (a) {
+                (is_reference) ? write_cwb("[") :  write_cwb("(");
                 for (i = 0; i <= size; i++) {
                     if (a[i]) serializeObject(a[i]);
                     if (i != size) write_cwb(", ");//delim
                 }
+            } else {
+                write_cwb("undef");
             }
-            (is_reference) ? write_cwb("]") :  write_cwb(")");
+            if (a) {
+                (is_reference) ? write_cwb("]") :  write_cwb(")");
+            }
             break;
         }
         case TYPE_Hash: {
             (is_reference) ? write_cwb("{") :  write_cwb("(");
-            XPVHV* xhv = (XPVHV*)SvANY(v);
-            size_t key_n = xhv->xhv_keys;
-            if (key_n > 0) {
-                size_t max_size = xhv->xhv_max;
-                HE *entries[key_n];
-                int i = 0;
-                int j = 0;
-                for (i = 0; i <= max_size; i++) {
-                    HE *he = v->sv_u.svu_hash[i];
-                    if (he) {
-                        entries[j] = he;
-                        j++;
-                        HE *next = he->hent_next;
-                        while (next) {
-                            entries[j] = next;
-                            next = next->hent_next;
-                            j++;
-                        }
-                    }
-                }
-                assert(j == key_n);
-                for (i = 0; i < key_n; i++) {
-                    char* key = entries[i]->hent_hek->hek_key;
-                    write_cwb(key);
-                    write_cwb(" => ");
-                    SV *val = entries[i]->he_valu.hent_val;
-                    serializeObject(val);
-                    if (entries[i + 1] != NULL) write_cwb(", ");//delim
-                }
-            }
+            serializeHash(v);
             (is_reference) ? write_cwb("}") :  write_cwb(")");
             break;
         }
@@ -239,11 +273,22 @@ static char *serializeObject(SV *v_)
             }
             break;
         }
+        case SVt_PVLV: {
+            XPVLV *xlv = (XPVLV *)v->sv_any;
+            if (xlv->xlv_type == 'T') {
+                //SV *targ = xlv->xlv_targ;
+                //SV *lv = *(SV **)((HE*)xlv->xlv_targ)->hent_hek->hek_key;
+                //serializeObject(lv);
+            }/* else if (LvTYPE(sv) != 't') {
+            }*/
+            write_cwb("undef");
+            break;
+        }
         default:
             write_cwb("undef");
             break;
         }
-}
+    }
 BREAK:;
     serialize_stack--;
     return cwb;
@@ -449,23 +494,23 @@ static Package *new_Package(const char *pkg_name)
 }
 
 //========================= Library Class API =================================//
-static Library *new_Library(char *path__)
-{
-    char *path_ = safe_malloc(strlen(path__) + 1);
-    strcpy(path_, path__);
-    char *path = safe_malloc(strlen(path_) + 1);
-    strcpy(path, path_);
-    char *tk = strtok(path_, "::");
-    char *name = NULL;
-    while (tk != NULL) {
-        tk = strtok(NULL, "::");
-        if (tk != NULL) name = tk;
-    }
-    Library *lib = safe_malloc(sizeof(Library));
-    lib->path = path;
-    lib->name = (name) ? name : path;
-    return lib;
-}
+//static Library *new_Library(char *path__)
+//{
+//    char *path_ = safe_malloc(strlen(path__) + 1);
+//    strcpy(path_, path__);
+//    char *path = safe_malloc(strlen(path_) + 1);
+//    strcpy(path, path_);
+//    char *tk = strtok(path_, "::");
+//    char *name = NULL;
+//    while (tk != NULL) {
+//        tk = strtok(NULL, "::");
+//        if (tk != NULL) name = tk;
+//    }
+//    Library *lib = safe_malloc(sizeof(Library));
+//    lib->path = path;
+//    lib->name = (name) ? name : path;
+//    return lib;
+//}
 
 //========================= TestCodeGenerator Class API =================================//
 static Package *TestCodeGenerator_getMatchedPackage(TestCodeGenerator *tcg, const char *pkg_name)
@@ -531,30 +576,7 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
             fprintf(fp, "%s;\n", use_list[i]);
         }
         fprintf(fp, "\n");
-        {
-            Package *pkg = pkgs;
-            Method *mtds = pkg->mtds;
-            for (; mtds; mtds = mtds->next) {
-                Method *mtd = mtds;
-                if (!match(mtd->stash, "main") && !pkg->existsLibrary(pkg, mtd->stash)) {
-                    pkg->addLibraryPath(pkg, mtd->stash);
-                }
-                CallFlow *cfs = mtd->cfs;
-                for (; cfs; cfs = cfs->next) {
-                    CallFlow *cf = cfs;
-                    if (!match(cf->from_stash, "main") && !pkg->existsLibrary(pkg, cf->from_stash)) {
-                        pkg->addLibraryPath(pkg, cf->from_stash);
-                    }
-                    if (!match(cf->to_stash, "main") && !pkg->existsLibrary(pkg, cf->to_stash)) {
-                        pkg->addLibraryPath(pkg, cf->to_stash);
-                    }
-                }
-            }
-        }
-        int j = 0;
-        for (; j < pkgs->lib_num; j++) {
-            fprintf(fp, "use_ok('%s');\n", pkgs->lib_paths[j]);
-        }
+        fprintf(fp, "use_ok('%s');\n", pkgs->name);
         i = 1;
         Method *mtds = pkgs->mtds;
         for (; mtds; mtds = mtds->next) {
@@ -563,35 +585,45 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
                 i++; continue;
             }
             fprintf(fp, "sub test_%03d_%s {\n", i, mtds->subname);
+            bool comment_out_flag = false;
             CallFlow *cfs = mtds->cfs;
             for (; cfs; cfs = cfs->next) {
-                write_space(fp, 4);
-                fprintf(fp, "Test::MockObject->fake_module('%s',\n", cfs->to_stash);
-                write_space(fp, 8);
+                comment_out_flag = false;
+                if (match(cfs->to_stash, mtds->stash)) continue;
+                if (!cfs->ret || cfs->is_xs) comment_out_flag = true;
+                write_space(fp, 4, comment_out_flag);
+                fprintf(fp, "Test::MockObject->fake_module(\"%s\",\n", cfs->to_stash);
+                write_space(fp, 8, comment_out_flag);
                 fprintf(fp, "%s => sub {\n", cfs->to);
-                write_space(fp, 12);
-                if (!cfs->ret) {
-                    fprintf(fp, "%s\n", ERROR_TEXT);
+                write_space(fp, 12, comment_out_flag);
+                if (cfs->is_xs) {
+                    fprintf(fp, "%s\n", XS_ERROR_TEXT);
+                } else if (!cfs->ret) {
+                    fprintf(fp, "%s\n", TRACE_ERROR_TEXT);
                 } else {
                     fprintf(fp, "%s;\n", cfs->ret);
                 }
-                write_space(fp, 8);
+                write_space(fp, 8, comment_out_flag);
                 fprintf(fp, "});\n");
             }
+            comment_out_flag = false;
+            if (mtds->args_error) comment_out_flag = true;
             if (mtds->stash && match(mtds->stash, "main")) {
-                write_space(fp, 4);
+                write_space(fp, 4, comment_out_flag);
                 if (mtds->ret_type == TYPE_List) {
                     fprintf(fp, "my @ret = %s(", mtds->subname);
+                } else if (!mtds->ret) {
+                    write_space(fp, 4, comment_out_flag);
+                    fprintf(fp, "%s(", mtds->subname);
                 } else {
                     fprintf(fp, "my $ret = %s(", mtds->subname);
                 }
-            } else if (!mtds->ret) {
-                write_space(fp, 4);
-                fprintf(fp, "%s::%s(", mtds->stash, mtds->subname);
             } else {
-                write_space(fp, 4);
+                write_space(fp, 4, comment_out_flag);
                 if (mtds->ret_type == TYPE_List) {
                     fprintf(fp, "my @ret = %s::%s(", mtds->stash, mtds->subname);
+                } else if (!mtds->ret) {
+                    fprintf(fp, "%s::%s(", mtds->stash, mtds->subname);
                 } else {
                     fprintf(fp, "my $ret = %s::%s(", mtds->stash, mtds->subname);
                 }
@@ -599,30 +631,43 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
             if (mtds->args) {
                 fprintf(fp, "%s", mtds->args);
             }
-            fprintf(fp, ");\n");
+            if (mtds->args_error) {
+                fprintf(fp, "); %s\n", TRACE_ERROR_TEXT);
+            } else {
+                fprintf(fp, ");\n");
+            }
             if (mtds->ret) {
                 switch (mtds->ret_type) {
                 case TYPE_Int: case TYPE_Double:
-                    write_space(fp, 4);
-                    fprintf(fp, "ok($ret, %s);\n", mtds->ret);
+                    write_space(fp, 4, comment_out_flag);
+                    fprintf(fp, "ok($ret == %s, \"%s\");\n", mtds->ret, mtds->name);
+                    break;
+                case TYPE_PtrInt: case TYPE_PtrDouble:
+                    write_space(fp, 4, comment_out_flag);
+                    if (find(mtds->ret, '\"')) {
+                        fprintf(fp, "ok($ret eq %s, \"%s\");\n", mtds->ret, mtds->name);
+                    } else {
+                        fprintf(fp, "ok($ret == %s, \"%s\");\n", mtds->ret, mtds->name);
+                    }
                     break;
                 case TYPE_String:
-                    write_space(fp, 4);
-                    fprintf(fp, "is($ret, %s);\n", mtds->ret);
+                    write_space(fp, 4, comment_out_flag);
+                    fprintf(fp, "is($ret, %s, \"%s\");\n", mtds->ret, mtds->name);
                     break;
                 case TYPE_Hash: case TYPE_Array:
                 case TYPE_Code: case TYPE_Object:
-                    write_space(fp, 4);
-                    fprintf(fp, "is_deeply($ret, %s);\n", mtds->ret);
+                    write_space(fp, 4, comment_out_flag);
+                    fprintf(fp, "is_deeply($ret, %s, \"%s\");\n", mtds->ret, mtds->name);
                     break;
                 case TYPE_List:
-                    write_space(fp, 4);
+                    write_space(fp, 4, comment_out_flag);
                     ((char *)mtds->ret)[0] = '[';
                     ((char *)mtds->ret)[strlen(mtds->ret) - 1] = ']';
-                    fprintf(fp, "is_deeply(\\@ret, %s);\n", mtds->ret);
+                    fprintf(fp, "is_deeply(\\@ret, %s, \"%s\");\n", mtds->ret, mtds->name);
                     break;
                 default:
-                    fprintf(fp, "ok($ret, %s);\n", mtds->ret);
+                    write_space(fp, 4, comment_out_flag);
+                    fprintf(fp, "ok($ret == %s, \"%s\");\n", mtds->ret, mtds->name);
                     break;
                 }
             }
@@ -680,6 +725,7 @@ TestCodeGenerator *new_TestCodeGenerator(void)
 
 static OP *(*pp_return)(pTHX) = NULL;
 static OP *(*pp_leavesub)(pTHX) = NULL;
+static OP *(*pp_leavesublv)(pTHX) = NULL;
 static OP *(*pp_goto)(pTHX) = NULL;
 static OP *(*pp_entersub)(pTHX) = NULL;
 
@@ -773,13 +819,11 @@ static bool xs_stack[MAX_CALLSTACK_SIZE] = {0};
 static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *callee_name)
 {
     const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
-    bool is_error = false;
     if (hasargs) {
         int i = 0;
         AV *argarray = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
         if (argarray && SvTYPE(argarray) == TYPE_Array) {
             int argc = argarray->sv_any->xav_fill;//av_len((AV *)argarray);
-            //fprintf(stderr, "hasargs, [%d]\n", argc);
             SV **a = argarray->sv_u.svu_array;
             if (setjmp(jbuf) == 0) {
                 if (a) {
@@ -792,10 +836,10 @@ static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *ca
                 }
             } else {
                 //CHANGE_COLOR(RED);
-                fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
+                //fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
                 //CHANGE_COLOR(WHITE);
-                fprintf(stderr, "%s => %s (args)\n", caller_name, callee_name);
-                is_error = true;
+                //fprintf(stderr, "%s => %s (args)\n", caller_name, callee_name);
+                return NULL;
             }
         }
     }
@@ -817,10 +861,10 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
     if (op_type != OP_GOTO) {
         callee_cv = NULL;
     } else {
-        SvREFCNT_inc(sub_sv);
+        //SvREFCNT_inc(sub_sv);
         callee_cv = (CV*)SvRV(sub_sv);
         SETERRNO(saved_errno, 0);
-        SvREFCNT_dec(sub_sv);
+        //SvREFCNT_dec(sub_sv);
     }
     char *caller_stash_name = NULL;
     char *callee_stash_name = NULL;
@@ -841,6 +885,7 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
             is_xs = true;
         }
     }
+    xs_stack[cxix] = is_xs;
     if (callee_cv && CvGV(callee_cv)) {
         GV *gv = CvGV(callee_cv);
         if (SvTYPE(gv) == SVt_PVGV && GvSTASH(gv)) {
@@ -888,7 +933,6 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
     //fprintf(stderr, "%s::%s => %s::%s\n", caller_name, callee_name);
     char *args = get_serialized_argument(aTHX, cxix, caller_name, callee_name);
     cf_stack[cxix] = cf;
-    xs_stack[cxix] = is_xs;
     Package *from_pkg = NULL;
     Package *to_pkg = NULL;
     if (!tcg->pkgs) {
@@ -931,7 +975,11 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
     }
     if (!to_mtd) {
         to_mtd = new_Method(callee_name, callee_stash_name, callee_sub_name);
-        to_mtd->setArgs(to_mtd, args);
+        if (args) {
+            to_mtd->setArgs(to_mtd, args);
+        } else {
+            to_mtd->args_error = true;
+        }
         if (!to_mtd->ret) {
             to_mtd->ret = cf->ret;
             to_mtd->ret_type = cf->ret_type;
@@ -945,7 +993,15 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
             to_mtd->ret = cf->ret;
             to_mtd->ret_type = cf->ret_type;
         }
-        to_mtd->setArgs(to_mtd, args);
+        if (args) {
+            if (!to_mtd->args) {
+                to_mtd->setArgs(to_mtd, args);
+            } else {
+                safe_free(args, strlen(args) + 1);
+            }
+        } else {
+            to_mtd->args_error = true;
+        }
         //safe_free(callee_name, callee_name_size);
     }
 }
@@ -960,9 +1016,12 @@ static void record_return_value(pTHX)
     I32 items = my_perl->Istack_sp - my_perl->Istack_base;
     bool is_list = false;
     CallFlow *cf = cf_stack[cxix];
-    if (!cf || (cf && cf->ret)) return;
+    if (!cf) return;
+    bool is_xs = xs_stack[cxix];
+    cf->is_xs = is_xs;
+    if (cf && cf->ret) return;
     if (setjmp(jbuf) == 0) {
-        if (cf && cf->from &&
+        if (cf->from &&
             (match(cf->from, "BEGIN") ||
              match(cf->from, "export") || match(cf->from, "import") ||
              match(cf->to, "export") || match(cf->to, "import"))) {
@@ -973,7 +1032,13 @@ static void record_return_value(pTHX)
             serializeObject(sp[0]);
         } else {
             int i = 0;
-            if (SvTYPE(my_perl->Icurstackinfo->si_stack) == TYPE_Array) {
+            I32 gimme = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_gimme;
+            int oldsp = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_oldsp;
+            mark = oldsp;
+            //const unsigned char type = my_perl->Isavestack->any_uv & SAVE_MASK;
+            //if (type == SAVEt_STACK_CXPOS) {}
+            if (gimme == G_ARRAY) {
+                //if (SvTYPE(my_perl->Icurstackinfo->si_stack) == TYPE_Array) {
                 //fprintf(stderr, "%s::%s => %s::%s\n", cf->from_stash, cf->from, cf->to_stash, cf->to);
                 //fprintf(stderr, "hasrvalue, [%d]\n", items);
                 if (items > 1 + mark) {
@@ -994,16 +1059,16 @@ static void record_return_value(pTHX)
                 if (items > 1 + mark) {
                     write_cwb(")");
                 }
-            } else if (items == 1) {//??
+            } else {
                 serializeObject(sp[0]);
             }
         }
     } else {
         //CHANGE_COLOR(RED);
-        fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
+        //fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
         //CHANGE_COLOR(WHITE);
-        fprintf(stderr, "%s::%s => %s::%s (rvalue)\n",
-                cf->from_stash, cf->from, cf->to_stash, cf->to);
+        //fprintf(stderr, "%s::%s => %s::%s (rvalue)\n",
+          //      cf->from_stash, cf->from, cf->to_stash, cf->to);
         return;
     }
     cf->setReturnValue(cf, cwb);
@@ -1012,23 +1077,15 @@ static void record_return_value(pTHX)
     } else {
         cf->ret_type = (SvROK(sp[0])) ? SvTYPE(SvRV(sp[0])) : SvTYPE(sp[0]);
     }
-    //size_t size = strlen(cf->from_stash) + strlen(cf->from) + 4;
-    //char from_buf[size];
-    //snprintf(from_buf, size, "%s::%s", cf->from_stash, cf->from);
-    //Method *from_mtd = MethodList_getMatchedMethod(mtd_lists, from_buf);
     size_t size = strlen(cf->to_stash) + strlen(cf->to) + 4;
     char to_buf[size];
     snprintf(to_buf, size, "%s::%s", cf->to_stash, cf->to);
     Method *to_mtd = MethodList_getMatchedMethod(mtd_lists, to_buf);
-    //if (from_mtd && !from_mtd->ret) {
-        //from_mtd->ret = cf->ret;
-        //from_mtd->ret_type = cf->ret_type;
-    //}
     if (to_mtd && !to_mtd->ret) {
         to_mtd->ret = cf->ret;
         to_mtd->ret_type = cf->ret_type;
     }
-    //fprintf(stderr, "RET = [%s]\n", cwb);
+    //fprintf(stderr, "RET = [%s]\n", cf->ret);
 }
 
 OP *hook_goto(pTHX)
@@ -1051,6 +1108,15 @@ OP *hook_leavesub(pTHX)
     return op;
 }
 
+OP *hook_leavesublv(pTHX)
+{
+    record_return_value(aTHX);
+    memset(cwb, 0, cwb_idx);
+    cwb_idx = 0;
+    OP *op = pp_leavesublv(aTHX);
+    return op;
+}
+
 OP *hook_return(pTHX)
 {
     record_return_value(aTHX);
@@ -1065,7 +1131,6 @@ OP *hook_entersub(pTHX)
     dSP;
     SV *sub_sv = *SP;
     OP *op = pp_entersub(aTHX);
-    SPAGAIN;
     record_callflow(aTHX_ sub_sv, op);
     memset(cwb, 0, cwb_idx);
     cwb_idx = 0;
@@ -1081,13 +1146,15 @@ import(klass, SV *flags = NULL)
 CODE:
 {
     pp_entersub = PL_ppaddr[OP_ENTERSUB];
-    PL_ppaddr[OP_ENTERSUB] = hook_entersub;
     pp_leavesub = PL_ppaddr[OP_LEAVESUB];
-    PL_ppaddr[OP_LEAVESUB] = hook_leavesub;
+	pp_leavesublv = PL_ppaddr[OP_LEAVESUBLV];
     pp_return = PL_ppaddr[OP_RETURN];
+    pp_goto = PL_ppaddr[OP_GOTO];
+    PL_ppaddr[OP_ENTERSUB] = hook_entersub;
+    PL_ppaddr[OP_LEAVESUB] = hook_leavesub;
+	PL_ppaddr[OP_LEAVESUBLV] = hook_leavesublv;
     PL_ppaddr[OP_RETURN] = hook_return;
-    //pp_goto = PL_ppaddr[OP_GOTO];
-    //PL_ppaddr[OP_GOTO] = hook_goto;
+    PL_ppaddr[OP_GOTO] = hook_goto;
     tcg = new_TestCodeGenerator();
     cwb = (char *)safe_malloc(MAX_CWB_SIZE);
 }
@@ -1099,7 +1166,9 @@ CODE:
     tcg->gen(tcg);
     PL_ppaddr[OP_ENTERSUB] = pp_entersub;
     PL_ppaddr[OP_LEAVESUB] = pp_leavesub;
+	PL_ppaddr[OP_LEAVESUBLV] = pp_leavesublv;
     PL_ppaddr[OP_RETURN] = pp_return;
+    PL_ppaddr[OP_GOTO] = pp_goto;
     CHANGE_COLOR(SYAN);
     fprintf(stderr, "AutoTest gen: exit normaly.\n");
     CHANGE_COLOR(WHITE);

@@ -43,9 +43,15 @@ typedef enum {
 
 #define CHANGE_COLOR(color) fprintf(stderr, "\x1b[%dm", color)
 
+#ifndef LOCALE
+#define LOCALE "EUC-JP"
+#endif
+
 typedef enum {
     TYPE_Int = SVt_IV,
+    TYPE_PtrInt = SVt_PVIV,
     TYPE_Double = SVt_NV,
+    TYPE_PtrDouble = SVt_PVNV,
     TYPE_String = SVt_PV,
     TYPE_Array = SVt_PVAV,
     TYPE_Hash = SVt_PVHV,
@@ -74,7 +80,8 @@ typedef bool int
 #define MAX_ARGS_NUM 64
 #define MAX_FILE_NAME_SIZE 64
 #define MAX_MACHINE_STACK_SIZE 1000
-#define ERROR_TEXT "# [cannot trace] TOO LARGE SIZE"
+#define XS_ERROR_TEXT "# [cannot trace] XS MODULE"
+#define TRACE_ERROR_TEXT "# [cannot trace] TOO LARGE SIZE"
 
 typedef struct String_ {
     size_t len;
@@ -87,6 +94,7 @@ typedef struct _CallFlow {
     const char *to_stash;
     const char *to;
     const char *ret;
+    bool is_xs;
     PerlType ret_type;
     struct _CallFlow *next;
     char *(*serializeObject)(struct _CallFlow *cf, SV *sv);
@@ -100,6 +108,7 @@ typedef struct _Method {
     const char *name;
     const char *args;
     const char *ret;
+    bool args_error;
     PerlType ret_type;
     CallFlow *cfs;
     struct _Method *next;
