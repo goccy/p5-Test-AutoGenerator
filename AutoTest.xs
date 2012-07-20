@@ -1,301 +1,14 @@
 #include "auto_test.h"
 
-
 //========================<<< GLOBAL VARIABLE >>>=================================//
-static jmp_buf jbuf;
+jmp_buf jbuf;
 static TestCodeGenerator *tcg = NULL;
-static char *cwb;
-static int cwb_idx = 0;
+
 static char *use_list[] = {
     "use strict", "use warnings", "use FindBin::libs qw(base=lib)",
     "use FindBin::libs qw(base=inc)", "use Test::More \"no_plan\"", "use Test::MockObject",
     NULL
 };
-static int serialize_stack = 0;
-static int memory_leaks = 0;
-
-//============================<<< UTIL API >>>====================================//
-static bool match(const char *from, const char *to)
-{
-    bool ret = false;
-    size_t from_size = strlen(from) + 1;
-    size_t to_size = strlen(to) + 1;
-    if (from_size == to_size && !strncmp(from, to, to_size)) {
-        ret = true;
-    }
-    return ret;
-}
-
-static bool find(const char *targ, char c) {
-    bool ret = false;
-    size_t size = strlen(targ);
-    int i = 0;
-    for (i = 0; i < size; i++) {
-        if (targ[i] == c) {
-            ret = true;
-            break;
-        }
-    }
-    return ret;
-}
-
-static void *safe_malloc(size_t size)
-{
-    void *ret = malloc(size);
-    if (!ret) {
-        fprintf(stderr, "ERROR!!:cannot allocate memory\n");
-        exit(EXIT_FAILURE);
-    }
-    memset(ret, 0, size);
-    memory_leaks += size;
-    return ret;
-}
-
-static void safe_free(void *ptr, size_t size)
-{
-    if (ptr) {
-        free(ptr);
-        memory_leaks -= size;
-        ptr = NULL;
-    }
-}
-
-static void write_space(FILE *fp, int space_num, bool comment_out_flag)
-{
-    int i = 0;
-    if (comment_out_flag) fprintf(fp, "#"); 
-    for (i = 0; i < space_num; i++) {
-        fprintf(fp, " ");
-    }
-}
-
-static inline void write_cwb(char *buf)
-{
-    size_t buf_size = strlen(buf);
-    strncpy(cwb + cwb_idx, buf, buf_size);
-    cwb_idx += buf_size;
-    if (cwb_idx > MAX_CWB_SIZE) {
-        //fprintf(stderr, "ERROR: cwb_idx = [%d] > %d\n", cwb_idx, MAX_CWB_SIZE);
-        serialize_stack = 0;
-        memset(cwb, 0, MAX_CWB_SIZE);
-        cwb_idx = 0;
-        longjmp(jbuf, 1);
-    }
-}
-
-static char *serializeObject(SV *v);
-static void serializeHE(HE *he)
-{
-    char* key = he->hent_hek->hek_key;
-    size_t len = strlen(key) + 1;
-    char buf[len + 2];
-    memset(buf, 0, len + 2);
-    snprintf(buf, len + 2, "\"%s\"", key);
-    write_cwb(buf);
-    write_cwb(" => ");
-    SV *val = he->he_valu.hent_val;
-    serializeObject(val);
-}
-
-static void serializeHash(SV *v)
-{
-    XPVHV* xhv = (XPVHV*)SvANY(v);
-    size_t key_n = xhv->xhv_keys;
-    if (key_n > 0) {
-        size_t max_size = xhv->xhv_max;
-        HE *entries[key_n];
-        int i = 0;
-        int j = 0;
-        for (i = 0; i <= max_size; i++) {
-            HE *he = v->sv_u.svu_hash[i];
-            if (he) {
-                entries[j] = he;
-                j++;
-                HE *next = he->hent_next;
-                while (next) {
-                    entries[j] = next;
-                    next = next->hent_next;
-                    j++;
-                }
-            }
-        }
-        assert(j == key_n);
-        for (i = 0; i < key_n; i++) {
-            serializeHE(entries[i]);
-            if (i + 1 != key_n) write_cwb(", ");//delim
-        }
-    }
-}
-
-static char buf[32] = {0};
-static char *serializeObject(SV *v_)
-{
-    serialize_stack++;
-    if (serialize_stack > MAX_MACHINE_STACK_SIZE) {
-        serialize_stack = 0;
-        memset(cwb, 0, cwb_idx);
-        cwb_idx = 0;
-        longjmp(jbuf, 1);
-    }
-    bool is_reference = false;
-    SV *v;
-    if (SvROK(v_)) {
-        v = v_->sv_u.svu_rv;
-        is_reference = true;
-    } else {
-        v = v_;
-    }
-    if (SvOBJECT(v)) {
-        if (SvTYPE(v) != TYPE_Hash) {
-            //fprintf(stderr, "TYPE = [%d]\n", SvTYPE(v));
-            write_cwb("undef");
-            goto BREAK;
-        }
-        write_cwb("bless (");
-        (is_reference) ? write_cwb("{") :  write_cwb("(");
-        serializeHash(v);
-        (is_reference) ? write_cwb("}") :  write_cwb(")");
-        write_cwb(", '");
-        write_cwb(HvNAME(SvSTASH(v)));
-        write_cwb("')");
-    } else {
-        if (SvROK(v)) {
-            //fprintf(stderr, "STILL REFERENCE\n");
-        }
-        switch (SvTYPE(v)) {
-        case TYPE_Int: {
-            int ivalue = SvIVX(v);
-            snprintf(buf, 32, "%d", ivalue);
-            write_cwb(buf);
-            memset(buf, 0, 32);
-            break;
-        }
-        case TYPE_PtrInt: {
-            char *ptr = v->sv_u.svu_pv;
-            if (ptr) {
-                snprintf(buf, 32, "%d", atoi(ptr));
-            } else {
-                snprintf(buf, 32, "0");
-            }
-            write_cwb(buf);
-            memset(buf, 0, 32);
-            break;
-        }
-        case TYPE_Double: {
-            double dvalue = SvNVX(v);
-            snprintf(buf, 32, "%f", dvalue);
-            write_cwb(buf);
-            memset(buf, 0, 32);
-            break;
-        }
-        case TYPE_PtrDouble: {
-            char *ptr = v->sv_u.svu_pv;
-            if (ptr) {
-                if (find(ptr, '.')) {
-                    snprintf(buf, 32, "%f", atof(ptr));
-                } else if (match(ptr, "")) {
-                    snprintf(buf, 32, "\"\"");
-                } else {
-                    snprintf(buf, 32, "%d", atoi(ptr));
-                }
-            } else {
-                snprintf(buf, 32, "''");
-            }
-            write_cwb(buf);
-            memset(buf, 0, 32);
-            break;
-        }
-        case TYPE_String: {
-            char *svalue = SvPVX(v);
-            if (svalue) {
-                size_t len = strlen(svalue) + 1;
-                size_t size = len;
-                char sout[size];
-                memset(sout, 0, size);
-                char *ptr_in  = svalue;
-                char *ptr_out = sout;
-                iconv_t ic = iconv_open("EUC-JP", LOCALE);
-                iconv(ic, &ptr_in, &len, &ptr_out, &len);
-                iconv_close(ic);
-                char buf[size + 2];
-                memset(buf, 0, size + 2);
-                snprintf(buf, size + 2, "\"%s\"", sout);
-                write_cwb(buf);
-            } else {
-                write_cwb("''");
-            }
-            break;
-        }
-        case TYPE_Array: {
-            int size = av_len((AV *)v);
-            int i = 0;
-            SV **a = v->sv_u.svu_array;
-            if (a) {
-                (is_reference) ? write_cwb("[") :  write_cwb("(");
-                for (i = 0; i <= size; i++) {
-                    if (a[i]) serializeObject(a[i]);
-                    if (i != size) write_cwb(", ");//delim
-                }
-            } else {
-                write_cwb("undef");
-            }
-            if (a) {
-                (is_reference) ? write_cwb("]") :  write_cwb(")");
-            }
-            break;
-        }
-        case TYPE_Hash: {
-            (is_reference) ? write_cwb("{") :  write_cwb("(");
-            serializeHash(v);
-            (is_reference) ? write_cwb("}") :  write_cwb(")");
-            break;
-        }
-        case TYPE_Object: {
-            //fprintf(stderr, "OBJECT\n");
-            write_cwb("undef");
-            break;
-        }
-        case TYPE_Code: {
-            HV *stash_ = CvSTASH((CV *)v);
-            if (!stash_) break;
-            char *stash_name = HvNAME(stash_);
-            char *func_name = GvNAME(CvGV((CV *)v));
-            size_t stash_size = strlen(stash_name);
-            size_t func_size = strlen(func_name);
-            if (stash_size == 4 && !strncmp(stash_name, "main", 4)) {
-                char buf[func_size + 8];
-                sprintf(buf, "\\&%s", func_name);
-                write_cwb(buf);
-            } else {
-                char buf[stash_size + func_size + 8];
-                sprintf(buf, "\\&%s::%s", stash_name, func_name);
-                write_cwb(buf);
-            }
-            break;
-        }
-        case SVt_PVLV: {
-            XPVLV *xlv = (XPVLV *)v->sv_any;
-            if (xlv->xlv_type == 'T') {
-                //SV *targ = xlv->xlv_targ;
-                //SV *lv = *(SV **)((HE*)xlv->xlv_targ)->hent_hek->hek_key;
-                //serializeObject(lv);
-            }/* else if (LvTYPE(sv) != 't') {
-            }*/
-            write_cwb("undef");
-            break;
-        }
-        default:
-            write_cwb("undef");
-            break;
-        }
-    }
-BREAK:;
-    serialize_stack--;
-    return cwb;
-}
-
-
-
 //========================= CallFlow Class API ===================================//
 
 static void CallFlow_setReturnValue(CallFlow *cf, char *ret_value)
@@ -541,20 +254,6 @@ static void TestCodeGenerator_addPackage(TestCodeGenerator *tcg, Package *pkg)
     }
 }
 
-static const char *TestCodeGenerator_getLibraryPath(TestCodeGenerator *tcg, const char *libname)
-{
-    const char *ret = NULL;
-    int i = 0;
-    for (; i < tcg->lib_num; i++) {
-        Library *lib = tcg->libs[i];
-        if (match(lib->name, libname)) {
-            ret = lib->path;
-            break;
-        }
-    }
-    return ret;
-}
-
 static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
 {
     char filename[MAX_FILE_NAME_SIZE] = {0};
@@ -688,19 +387,6 @@ static void TestCodeGenerator_gen(TestCodeGenerator *tcg)
     }
 }
 
-static bool TestCodeGenerator_existsLibrary(TestCodeGenerator *tcg, const char *name)
-{
-    bool ret = false;
-    int i = 0;
-    for (; i < tcg->lib_num; i++) {
-        if (match(tcg->libs[i]->name, name)) {
-            ret = true;
-            break;
-        }
-    }
-    return ret;
-}
-
 static void TestCodeGenerator_free(TestCodeGenerator *tcg)
 {
     if (tcg->pkgs) {
@@ -712,10 +398,9 @@ static void TestCodeGenerator_free(TestCodeGenerator *tcg)
 TestCodeGenerator *new_TestCodeGenerator(void)
 {
     TestCodeGenerator *tcg = safe_malloc(sizeof(TestCodeGenerator));
+    tcg->fs = new_FastSerializer();
     tcg->getMatchedPackage = TestCodeGenerator_getMatchedPackage;
     tcg->addPackage = TestCodeGenerator_addPackage;
-    tcg->getLibraryPath = TestCodeGenerator_getLibraryPath;
-    tcg->existsLibrary = TestCodeGenerator_existsLibrary;
     tcg->gen = TestCodeGenerator_gen;
     tcg->free = TestCodeGenerator_free;
     return tcg;
@@ -828,7 +513,7 @@ static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *ca
             if (setjmp(jbuf) == 0) {
                 if (a) {
                     for (i = 0; i <= argc; i++) {
-                        serializeObject(a[i]);
+                        tcg->fs->serialize(tcg->fs, a[i]);
                         if (i != argc) {
                             write_cwb(", ");//delim
                         }
@@ -846,6 +531,7 @@ static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *ca
     size_t size = strlen(cwb) + 1;
     char *args = safe_malloc(size);
     memcpy(args, cwb, size);
+    //fprintf(stderr, "ARGS = [%s]\n", args);
     return args;
 }
 
@@ -1010,8 +696,6 @@ static void record_return_value(pTHX)
 {
     int cxix = my_perl->Icurstackinfo->si_cxix;
     SV **sp = my_perl->Istack_sp;
-    //SV **mark = my_perl->Istack_base - *my_perl->Imarkstack_ptr-1;
-    //I32 items = my_perl->Istack_sp - mark -1;
     int mark = *my_perl->Imarkstack_ptr;
     I32 items = my_perl->Istack_sp - my_perl->Istack_base;
     bool is_list = false;
@@ -1029,18 +713,14 @@ static void record_return_value(pTHX)
         } else if (!sp[0] || !SvOK(sp[0])) {
             return;
         } else if (items < 0) {
-            serializeObject(sp[0]);
+            tcg->fs->serialize(tcg->fs, sp[0]);
         } else {
             int i = 0;
             I32 gimme = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_gimme;
             int oldsp = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_oldsp;
             mark = oldsp;
-            //const unsigned char type = my_perl->Isavestack->any_uv & SAVE_MASK;
-            //if (type == SAVEt_STACK_CXPOS) {}
             if (gimme == G_ARRAY) {
-                //if (SvTYPE(my_perl->Icurstackinfo->si_stack) == TYPE_Array) {
-                //fprintf(stderr, "%s::%s => %s::%s\n", cf->from_stash, cf->from, cf->to_stash, cf->to);
-                //fprintf(stderr, "hasrvalue, [%d]\n", items);
+                //fprintf(stderr, "rvalue : %s::%s => %s::%s\n", cf->from_stash, cf->from, cf->to_stash, cf->to);
                 if (items > 1 + mark) {
                     is_list = true;
                     write_cwb("(");
@@ -1048,19 +728,17 @@ static void record_return_value(pTHX)
                 SV **base = my_perl->Istack_base;
                 for (i = 1 + mark; i <= items; i++) {
                     if (base[i]) {
-                        serializeObject(base[i]);
+                        tcg->fs->serialize(tcg->fs, base[i]);
                     } else {
                         break;
                     }
-                    if (i != items) {
-                        write_cwb(", ");//delim
-                    }
+                    if (i != items) write_cwb(", ");
                 }
                 if (items > 1 + mark) {
                     write_cwb(")");
                 }
             } else {
-                serializeObject(sp[0]);
+                tcg->fs->serialize(tcg->fs, sp[0]);
             }
         }
     } else {
@@ -1068,7 +746,7 @@ static void record_return_value(pTHX)
         //fprintf(stderr, "AutoTest Exception! [TOO LARGE BUFFER SIZE]: ");
         //CHANGE_COLOR(WHITE);
         //fprintf(stderr, "%s::%s => %s::%s (rvalue)\n",
-          //      cf->from_stash, cf->from, cf->to_stash, cf->to);
+        //cf->from_stash, cf->from, cf->to_stash, cf->to);
         return;
     }
     cf->setReturnValue(cf, cwb);
@@ -1174,8 +852,8 @@ CODE:
     CHANGE_COLOR(WHITE);
     //tcg->free(tcg);
     //safe_free(cwb, MAX_CWB_SIZE);
-    if (memory_leaks > 0) {
-        fprintf(stderr, "memory_leaks = %d bytes\n", memory_leaks);
+    if (leaks() > 0) {
+        fprintf(stderr, "memory_leaks = %d bytes\n", leaks());
     }
 }
 

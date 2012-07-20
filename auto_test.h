@@ -47,17 +47,33 @@ typedef enum {
 #define LOCALE "EUC-JP"
 #endif
 
+#ifdef DEBUG_MODE
+#define DBG_PL(fmt, ...) {                      \
+        fprintf(stderr, fmt, ## __VA_ARGS__);	\
+        fprintf(stderr, "\n");                  \
+    }
+#else
+#define DBG_PL(fmt, ...) {}
+#endif
 typedef enum {
+    TYPE_Null = SVt_NULL,
+    TYPE_Bind = SVt_BIND,
     TYPE_Int = SVt_IV,
-    TYPE_PtrInt = SVt_PVIV,
     TYPE_Double = SVt_NV,
-    TYPE_PtrDouble = SVt_PVNV,
     TYPE_String = SVt_PV,
+    TYPE_PtrInt = SVt_PVIV,
+    TYPE_PtrDouble = SVt_PVNV,
+    TYPE_Object = SVt_PVMG,
+    TYPE_Regex = SVt_REGEXP,
+    TYPE_Glob = SVt_PVGV,
+    TYPE_PVLV = SVt_PVLV,
     TYPE_Array = SVt_PVAV,
     TYPE_Hash = SVt_PVHV,
-    TYPE_Object = SVt_PVMG,
     TYPE_Code = SVt_PVCV,
-    TYPE_List = 17,
+    TYPE_FM = SVt_PVFM,
+    TYPE_IO = SVt_PVIO,
+    L_TOP,
+    TYPE_List = 18,
 } PerlType;
 
 #ifndef bool
@@ -83,10 +99,23 @@ typedef bool int
 #define XS_ERROR_TEXT "# [cannot trace] XS MODULE"
 #define TRACE_ERROR_TEXT "# [cannot trace] TOO LARGE SIZE"
 
-typedef struct String_ {
-    size_t len;
-    char *s;
-} String;
+typedef struct _FastSerializer {
+    char *(*serialize)(struct _FastSerializer *fs, SV *v);
+} FastSerializer;
+
+typedef struct _VirtualCallStack {
+    /* save object information */
+    SV *v; /* current object */
+    void *ret_addr; /* return address */
+    /* save loop information */
+    SV **a; /* current array objs (for array) */
+    SV *hash_v;
+    HE *next;
+    int i; /* current item num (for array, hash) */
+    int j; /* current serialize num (for hash) */
+    int size; /* max item size (for array, hash) */
+    int max_size; /* max search num (for hash) */
+} VirtualCallStack;
 
 typedef struct _CallFlow {
     const char *from_stash;
@@ -131,19 +160,24 @@ typedef struct _Package {
     void (*free)(struct _Package *pkg);
 } Package;
 
-typedef struct _Library {
-    const char *path;
-    const char *name;
-} Library;
-
 typedef struct _TestCodeGenerator {
+    FastSerializer *fs;
     Package *pkgs;
-    Library **libs;
     int lib_num;
     Package *(*getMatchedPackage)(struct _TestCodeGenerator *tcg, const char *pkg_name);
     void (*addPackage)(struct _TestCodeGenerator *tcg, Package *pkg);
-    const char *(*getLibraryPath)(struct _TestCodeGenerator *tcg, const char *libname);
-    bool (*existsLibrary)(struct _TestCodeGenerator *tcg, const char *libname);
     void (*gen)(struct _TestCodeGenerator *tcg);
     void (*free)(struct _TestCodeGenerator *tcg);
 } TestCodeGenerator;
+
+extern char *cwb;
+extern int cwb_idx;
+extern jmp_buf jbuf;
+extern void *safe_malloc(size_t size);
+extern void safe_free(void *ptr, size_t size);
+extern int leaks(void);
+extern bool match(const char *from, const char *to);
+extern bool find(const char *targ, char ch);
+extern void write_space(FILE *fp, int space_num, bool comment_out_flag);
+extern void write_cwb(char *buf);
+extern FastSerializer *new_FastSerializer(void);
