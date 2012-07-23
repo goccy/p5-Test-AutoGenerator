@@ -99,9 +99,30 @@ typedef bool int
 #define XS_ERROR_TEXT "# [cannot trace] XS MODULE"
 #define TRACE_ERROR_TEXT "# [cannot trace] TOO LARGE SIZE"
 
+#define MAX_HASH_SIZE 512
+
 typedef struct _FastSerializer {
     char *(*serialize)(struct _FastSerializer *fs, SV *v);
 } FastSerializer;
+
+typedef struct _HashList {
+    const char *key;
+    const void *value;
+    struct _HashList *next;
+} HashList;
+
+typedef struct _HashMap {
+    HashList **hash_table;
+    size_t table_size;
+    void (*setValue)(struct _HashMap *map, const char *key, const char *value);
+    const void *(*getValue)(struct _HashMap *map, const char *key);
+} HashMap;
+
+typedef struct _String {
+    unsigned long hash;
+    char *s;
+    size_t len;
+} String;
 
 typedef struct _VirtualCallStack {
     /* save object information */

@@ -45,33 +45,52 @@ static char buf[32] = {0};
     } while (0)
 #endif
 
+#define RECURSIVE_CALL_byArray(_a, _i, _size) do {  \
+        if (callstack_idx > MAX_CALLSTACK_SIZE) {   \
+            DO_EXCEPTION();                         \
+        }                                           \
+        callstack_idx++;                            \
+        callstack++;                                \
+        callstack->ret_addr = &&L_ARRAY_AFTER;      \
+        callstack->a = _a;                          \
+        callstack->i = _i;                          \
+        callstack->size = _size;                    \
+        goto *jmp_table[L_TOP];                     \
+    L_ARRAY_AFTER:;                                 \
+        _a = callstack->a;                          \
+        _i = callstack->i;                          \
+        _size = callstack->size;                    \
+        callstack--;                                \
+        callstack_idx--;                            \
+    } while (0)
+
 #define CALL(array, _vv, _next, _sv, _i, _j, _size, _max_size, TO, FROM) do { \
-        if (callstack_idx > MAX_CALLSTACK_SIZE) {                   \
-            DO_EXCEPTION();                                         \
-        }                                                           \
-        callstack_idx++;                                            \
-        callstack++;                                                \
-        callstack->ret_addr = &&L_##FROM##AFTER;                    \
-        callstack->a = array;                                       \
-        callstack->hash_v = _vv;                                     \
-        callstack->next = _next;                                     \
-        callstack->i = _i;                                           \
-        callstack->j = _j;                                           \
-        callstack->size = _size;                                     \
-        callstack->max_size = _max_size;                             \
-        callstack->v = _sv;                                          \
-        goto *jmp_table[TO];                                        \
-    L_##FROM##AFTER:                                                \
-        _sv = callstack->v;                                         \
-        array = callstack->a;                                       \
-        _vv = callstack->hash_v;                                     \
-        _next = callstack->next;                                     \
-        _i = callstack->i;                                           \
-        _j = callstack->j;                                           \
-        _size = callstack->size;                                     \
-        _max_size = callstack->max_size;                             \
-        callstack--;                                                \
-        callstack_idx--;                                            \
+        if (callstack_idx > MAX_CALLSTACK_SIZE) {                       \
+            DO_EXCEPTION();                                             \
+        }                                                               \
+        callstack_idx++;                                                \
+        callstack++;                                                    \
+        callstack->ret_addr = &&L_##FROM##AFTER;                        \
+        callstack->a = array;                                           \
+        callstack->hash_v = _vv;                                        \
+        callstack->next = _next;                                        \
+        callstack->i = _i;                                              \
+        callstack->j = _j;                                              \
+        callstack->size = _size;                                        \
+        callstack->max_size = _max_size;                                \
+        callstack->v = _sv;                                             \
+        goto *jmp_table[TO];                                            \
+    L_##FROM##AFTER:                                                    \
+        _sv = callstack->v;                                             \
+        array = callstack->a;                                           \
+        _vv = callstack->hash_v;                                        \
+        _next = callstack->next;                                        \
+        _i = callstack->i;                                              \
+        _j = callstack->j;                                              \
+        _size = callstack->size;                                        \
+        _max_size = callstack->max_size;                                \
+        callstack--;                                                    \
+        callstack_idx--;                                                \
     } while (0)
 
 #define FastSerializer_serializeIntObject(v) do {   \
