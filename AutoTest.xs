@@ -825,12 +825,12 @@ CODE:
 {
     pp_entersub = PL_ppaddr[OP_ENTERSUB];
     pp_leavesub = PL_ppaddr[OP_LEAVESUB];
-	pp_leavesublv = PL_ppaddr[OP_LEAVESUBLV];
+    pp_leavesublv = PL_ppaddr[OP_LEAVESUBLV];
     pp_return = PL_ppaddr[OP_RETURN];
     pp_goto = PL_ppaddr[OP_GOTO];
     PL_ppaddr[OP_ENTERSUB] = hook_entersub;
     PL_ppaddr[OP_LEAVESUB] = hook_leavesub;
-	PL_ppaddr[OP_LEAVESUBLV] = hook_leavesublv;
+    PL_ppaddr[OP_LEAVESUBLV] = hook_leavesublv;
     PL_ppaddr[OP_RETURN] = hook_return;
     PL_ppaddr[OP_GOTO] = hook_goto;
     tcg = new_TestCodeGenerator();
