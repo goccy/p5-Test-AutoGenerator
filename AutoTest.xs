@@ -501,12 +501,12 @@ static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 //================================================================================//
 static CallFlow *cf_stack[MAX_CALLSTACK_SIZE] = {0};
 static bool xs_stack[MAX_CALLSTACK_SIZE] = {0};
-static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *callee_name)
+static char *get_serialized_argument(pTHX_ int cxix, char *caller_name, char *callee_name)
 {
     const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
     if (hasargs) {
         int i = 0;
-        AV *argarray = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
+        AV *argarray = PL_curstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
         if (argarray && SvTYPE(argarray) == TYPE_Array) {
             int argc = argarray->sv_any->xav_fill;//av_len((AV *)argarray);
             SV **a = argarray->sv_u.svu_array;
@@ -537,7 +537,7 @@ static char *get_serialized_argument(pTHX, int cxix, char *caller_name, char *ca
 
 static void record_callflow(pTHX_ SV *sub_sv, OP *op)
 {
-    int cxix = my_perl->Icurstackinfo->si_cxix;
+    int cxix = PL_curstackinfo->si_cxix;
     int saved_errno = errno;
     OP *next_op = PL_op->op_next;
     OPCODE op_type = ((opcode) PL_op->op_type == OP_GOTO) ? (opcode) PL_op->op_type : OP_ENTERSUB;
@@ -617,7 +617,7 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
                                 callee_stash_name, callee_sub_name);
     //fprintf(stderr, "stack = [%d]\n", cxix);
     //fprintf(stderr, "%s::%s => %s::%s\n", caller_name, callee_name);
-    char *args = get_serialized_argument(aTHX, cxix, caller_name, callee_name);
+    char *args = get_serialized_argument(aTHX_ cxix, caller_name, callee_name);
     cf_stack[cxix] = cf;
     Package *from_pkg = NULL;
     Package *to_pkg = NULL;
@@ -694,10 +694,10 @@ static void record_callflow(pTHX_ SV *sub_sv, OP *op)
 
 static void record_return_value(pTHX)
 {
-    int cxix = my_perl->Icurstackinfo->si_cxix;
-    SV **sp = my_perl->Istack_sp;
-    int mark = *my_perl->Imarkstack_ptr;
-    I32 items = my_perl->Istack_sp - my_perl->Istack_base;
+    int cxix = PL_curstackinfo->si_cxix;
+    SV **sp = PL_stack_sp;
+    int mark = *PL_markstack_ptr;
+    I32 items = PL_stack_sp - PL_stack_base;
     bool is_list = false;
     CallFlow *cf = cf_stack[cxix];
     if (!cf) return;
@@ -716,8 +716,8 @@ static void record_return_value(pTHX)
             tcg->fs->serialize(tcg->fs, sp[0]);
         } else {
             int i = 0;
-            I32 gimme = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_gimme;
-            int oldsp = my_perl->Icurstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_oldsp;
+            I32 gimme = PL_curstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_gimme;
+            int oldsp = PL_curstackinfo->si_cxstack[cxix].cx_u.cx_blk.blku_oldsp;
             mark = oldsp;
             if (gimme == G_ARRAY) {
                 //fprintf(stderr, "rvalue : %s::%s => %s::%s\n", cf->from_stash, cf->from, cf->to_stash, cf->to);
@@ -725,7 +725,7 @@ static void record_return_value(pTHX)
                     is_list = true;
                     write_cwb("(");
                 }
-                SV **base = my_perl->Istack_base;
+                SV **base = PL_stack_base;
                 for (i = 1 + mark; i <= items; i++) {
                     if (base[i]) {
                         tcg->fs->serialize(tcg->fs, base[i]);
@@ -825,12 +825,12 @@ CODE:
 {
     pp_entersub = PL_ppaddr[OP_ENTERSUB];
     pp_leavesub = PL_ppaddr[OP_LEAVESUB];
-	pp_leavesublv = PL_ppaddr[OP_LEAVESUBLV];
+    pp_leavesublv = PL_ppaddr[OP_LEAVESUBLV];
     pp_return = PL_ppaddr[OP_RETURN];
     pp_goto = PL_ppaddr[OP_GOTO];
     PL_ppaddr[OP_ENTERSUB] = hook_entersub;
     PL_ppaddr[OP_LEAVESUB] = hook_leavesub;
-	PL_ppaddr[OP_LEAVESUBLV] = hook_leavesublv;
+    PL_ppaddr[OP_LEAVESUBLV] = hook_leavesublv;
     PL_ppaddr[OP_RETURN] = hook_return;
     PL_ppaddr[OP_GOTO] = hook_goto;
     tcg = new_TestCodeGenerator();
@@ -861,7 +861,7 @@ void
 dump_vmcode()
 CODE:
 {
-    OP *pc = my_perl->Iop;
+    OP *pc = PL_op;
     fprintf(stderr, "========= DUMP VMCODE =======\n");
     for (; pc; pc = pc->op_next) {
         fprintf(stderr, "[%s]\n", OP_NAME(pc));
