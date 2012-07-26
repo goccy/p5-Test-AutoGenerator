@@ -1,6 +1,7 @@
 #! /usr/bin/env perl
 use strict;
-use Test::More tests => 3;
+use Test::More tests => 2;
+use File::Copy;
 
 my $src = << 'EOF';
 package AutoTest1;
@@ -39,25 +40,20 @@ sub sdump ($$) {
   open F, ">", $script;
   print F $src;
   close F;
-  END { unlink $script; }
 }
 
 sdump $script, $src;
+END { unlink $script; }
 my $X = $^X =~ m/\s/ ? qq{"$^X"} : $^X;
 my $result = `$X -Mblib $script`;
 
 ok(-f $t and -s $t, "$t created");
-END { unlink $t; }
 
 ok(system($X,'-c',$t) == 0, "$t parsable");
 
+# prepare 2nd test
 $src =~ s/use AutoTest;//;
 sdump 'AutoTest1.pm', $src;
-
-subtest "$t works" => sub {
-  plan tests => 1;
-  ok(system($X,'-I.','-MAutoTest1', $t,
-	 $^O eq 'MSWin32' ? '2>.tmp' : '2>/dev/null') == 0, "$t testable");
-};
+File::Copy::mv($t,'t/AutoTest2.t');
 
 }
