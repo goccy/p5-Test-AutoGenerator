@@ -221,6 +221,7 @@ class TestCodeGenerator {
 public:
 	FastSerializer *fs;
 	PackageMap *pkgs;
+	LibraryMap *libs;
 	int lib_num;
 
 	TestCodeGenerator(void);
@@ -228,6 +229,7 @@ public:
 	bool existsPackage(const char *pkg_name);
 	Package *getPackage(const char *pkg_name);
 	Package *addPackage(Package *pkg);
+	void addGeneratedLibraryName(const char *libname);
 	void dump(void);
 	void gen(void);
 };

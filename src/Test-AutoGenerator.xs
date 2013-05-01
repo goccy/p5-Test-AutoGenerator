@@ -13,85 +13,85 @@ static OP *(*pp_entersub)(pTHX) = NULL;
 //======================= FROM NYTProf ==============================//
 static CV *resolve_sub_to_cv(pTHX_ SV *sv, GV **subname_gv_ptr)
 {
-    GV *dummy_gv;
-    HV *stash;
-    CV *cv;
-    if (!subname_gv_ptr) {
-        subname_gv_ptr = &dummy_gv;
-    } else {
-        *subname_gv_ptr = Nullgv;
-    }
-    switch (SvTYPE(sv)) {
-    default:
-        if (!SvROK(sv)) {
-            char *sym;
-            if (sv == &PL_sv_yes) {           /* unfound import, ignore */
-                return NULL;
-            }
-            if (SvGMAGICAL(sv)) {
-                mg_get(sv);
-                if (SvROK(sv)) goto got_rv;
-                sym = SvPOKp(sv) ? SvPVX(sv) : Nullch;
-            } else {
-                sym = SvPVX(sv);
-            }
-            if (!sym) return NULL;
-            if (PL_op->op_private & HINT_STRICT_REFS) return NULL;
-            cv = get_cv(sym, TRUE);
-            break;
-        }
-    got_rv:;
-        {
-            SV **sp = &sv;                    /* Used in tryAMAGICunDEREF macro. */
-            tryAMAGICunDEREF(to_cv);
-        }
-        cv = (CV*)SvRV(sv);
-        if (SvTYPE(cv) == SVt_PVCV)
-            break;
-        /* FALL THROUGH */
-    case SVt_PVHV:
-    case SVt_PVAV:
-        return NULL;
-    case SVt_PVCV:
-        cv = (CV*)sv;
-        break;
-    case SVt_PVGV:
-        if (!(isGV_with_GP(sv) && (cv = GvCVu((GV*)sv))))
-            cv = sv_2cv(sv, &stash, subname_gv_ptr, FALSE);
-        if (!cv)                              /* would autoload in this situation */
-            return NULL;
-        break;
-    }
-    if (cv && !*subname_gv_ptr && CvGV(cv) && isGV_with_GP(CvGV(cv))) {
-        *subname_gv_ptr = CvGV(cv);
-    }
-    return cv;
+	GV *dummy_gv;
+	HV *stash;
+	CV *cv;
+	if (!subname_gv_ptr) {
+		subname_gv_ptr = &dummy_gv;
+	} else {
+		*subname_gv_ptr = Nullgv;
+	}
+	switch (SvTYPE(sv)) {
+	default:
+		if (!SvROK(sv)) {
+			char *sym;
+			if (sv == &PL_sv_yes) {/* unfound import, ignore */
+				return NULL;
+			}
+			if (SvGMAGICAL(sv)) {
+				mg_get(sv);
+				if (SvROK(sv)) goto got_rv;
+				sym = SvPOKp(sv) ? SvPVX(sv) : Nullch;
+			} else {
+				sym = SvPVX(sv);
+			}
+			if (!sym) return NULL;
+			if (PL_op->op_private & HINT_STRICT_REFS) return NULL;
+			cv = get_cv(sym, TRUE);
+			break;
+		}
+	got_rv:;
+		{
+			SV **sp = &sv; /* Used in tryAMAGICunDEREF macro. */
+			tryAMAGICunDEREF(to_cv);
+		}
+		cv = (CV*)SvRV(sv);
+		if (SvTYPE(cv) == SVt_PVCV)
+			break;
+		/* FALL THROUGH */
+	case SVt_PVHV:
+	case SVt_PVAV:
+		return NULL;
+	case SVt_PVCV:
+		cv = (CV*)sv;
+		break;
+	case SVt_PVGV:
+		if (!(isGV_with_GP(sv) && (cv = GvCVu((GV*)sv))))
+			cv = sv_2cv(sv, &stash, subname_gv_ptr, FALSE);
+		if (!cv)/* would autoload in this situation */
+			return NULL;
+		break;
+	}
+	if (cv && !*subname_gv_ptr && CvGV(cv) && isGV_with_GP(CvGV(cv))) {
+		*subname_gv_ptr = CvGV(cv);
+	}
+	return cv;
 }
 
 static CV* current_cv(pTHX_ I32 ix, PERL_SI *si)
 {
-    PERL_CONTEXT *cx;
-    if (!si)
-        si = PL_curstackinfo;
-    if (ix < 0) {
-        if (si->si_type != PERLSI_MAIN)
-            return current_cv(aTHX_ si->si_prev->si_cxix, si->si_prev);
-        return Nullcv;
-    }
-    cx = &si->si_cxstack[ix];
-    if (CxTYPE(cx) == CXt_SUB || CxTYPE(cx) == CXt_FORMAT)
-        return cx->blk_sub.cv;
-    else if (CxTYPE(cx) == CXt_EVAL && !CxTRYBLOCK(cx))
-        return current_cv(aTHX_ ix - 1, si);
-    else if (ix == 0 && si->si_type == PERLSI_MAIN)
-        return PL_main_cv;
-    else if (ix > 0)
-        return current_cv(aTHX_ ix - 1, si);
-
-    if (si->si_type != PERLSI_MAIN) {
-        return current_cv(aTHX_ si->si_prev->si_cxix, si->si_prev);
-    }
-    return Nullcv;
+	PERL_CONTEXT *cx;
+	if (!si) si = PL_curstackinfo;
+	if (ix < 0) {
+		if (si->si_type != PERLSI_MAIN) {
+			return current_cv(aTHX_ si->si_prev->si_cxix, si->si_prev);
+		}
+		return Nullcv;
+	}
+	cx = &si->si_cxstack[ix];
+	if (CxTYPE(cx) == CXt_SUB || CxTYPE(cx) == CXt_FORMAT) {
+		return cx->blk_sub.cv;
+	} else if (CxTYPE(cx) == CXt_EVAL && !CxTRYBLOCK(cx)) {
+		return current_cv(aTHX_ ix - 1, si);
+	} else if (ix == 0 && si->si_type == PERLSI_MAIN) {
+		return PL_main_cv;
+	} else if (ix > 0) {
+		return current_cv(aTHX_ ix - 1, si);
+	}
+	if (si->si_type != PERLSI_MAIN) {
+		return current_cv(aTHX_ si->si_prev->si_cxix, si->si_prev);
+	}
+	return Nullcv;
 }
 
 //================================================================================//
@@ -99,7 +99,7 @@ static CallFlow *cf_stack[MAX_CALLSTACK_SIZE] = {0};
 static bool xs_stack[MAX_CALLSTACK_SIZE] = {0};
 static char *get_serialized_argument(pTHX_ int cxix, const char *caller_name, const char *callee_name)
 {
-    const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
+	const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
 	if (!hasargs) return NULL;
 	int i = 0;
 	AV *argarray = PL_curstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
@@ -392,4 +392,20 @@ CODE:
 		fprintf(stderr, "[%s]\n", OP_NAME(pc));
 	}
 	fprintf(stderr, "=============================\n");
+}
+
+void
+set_generated_library_name(self, libs_)
+	SV *self
+	AV *libs_
+CODE:
+{
+	if (!tcg) return;
+	size_t libs_size = av_len(libs_);
+	SV **libs = libs_->sv_u.svu_array;
+	if (!libs) return;
+	for (size_t i = 0; i <= libs_size; i++) {
+		const char *libname = SvPVX(libs[i]);
+		tcg->addGeneratedLibraryName(libname);
+	}
 }

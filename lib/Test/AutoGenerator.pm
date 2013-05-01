@@ -19,16 +19,19 @@ __END__
 
 =head1 NAME
 
-AutoTest - automatically generate perl test code
+Test::AutoGenerator - automatically generate perl test code
 
 =head1 SYNOPSIS
 
-  use Test::AutoGenerator;
+1. paste under the code and run your program.
 
+use Test::AutoGenerator;
+my @libs = qw//;
+Test::AutoGenerator->set_generated_library_name(\@libs);
+
+2. automatically generated under your 't' directory
 
 =head1 DESCRIPTION
-
-Generate test code code from parsing source code.
 
 =head1 AUTHOR
 
@@ -36,10 +39,10 @@ Masaaki Goshima E<lt>goccy54@gmail.comE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2012 by Masaaki Goshima
+Copyright (C) 2013 by Masaaki Goshima
 
 This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.8 or,
+it under the same terms as Perl itself, either Perl version 5.14 or,
 at your option, any later version of Perl 5 you may have available.
 
 =cut

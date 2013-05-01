@@ -1,38 +1,55 @@
-Test::AutoGenerator version 0.01
-============================
+This is Perl module Test::AutoGenerator.
 
-The README is used to introduce the module and provide instructions on
-how to install the module, any machine dependencies it may have (for
-example C compilers and installed libraries) and any other information
-that should be provided before the module is installed.
+NAME
 
-A README file is required for CPAN modules since CPAN extracts the
-README file from a module distribution so that people browsing the
-archive can use it get an idea of the modules uses. It is usually a
-good idea to provide version information here so that people can
-decide whether fixes for the module are worth downloading.
+Test::AutoGenerator - automatically generate perl test code.
+
+SYNOPSIS
+
+1. paste under the code and run your program.
+
+use Test::AutoGenerator;
+my @libs = qw//;
+Test::AutoGenerator->set_generated_library_name(\@libs);
+
+2. automatically generated under your 't' directory
 
 INSTALLATION
 
-To install this module type the following:
+Install cpanm (App::cpanminus) and then run the following command to install
+Lexer:
 
-   perl Makefile.PL
-   make
-   make test
-   make install
+    $ cpanm Test::AutoGenerator
 
-DEPENDENCIES
+If you get the distribution, unpack it and build it as per the usual:
 
-This module requires these other modules and libraries:
+    $ tar xzf p5-Test-AutoGenerator.tar.gz
+    $ cd p5-Test-AutoGenerator
+    $ perl Makefile.PL
+    $ make && make test
 
-  blah blah blah
+Then install it:
 
-COPYRIGHT AND LICENCE
+    $ make install
 
-Put the correct copyright and licence information here.
+If you want to install it from the repository, you must install authoring
+tools.
 
-Copyright (C) 2013 by goccy
+    $ cpanm < author/requires.cpanm
+
+DOCUMENTATION
+
+Test::AutoGenerator documentation is available as in POD. So you can do:
+
+    $ perldoc Test::AutoGenerator
+
+to read the documentation online with your favorite pager.
+
+RESOURCE
+
+LICENSE AND COPYRIGHT
+
+Copyright (c) 2013, Masaaki, Goshima (goccy). All rights reserved.
 
 This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.12.3 or,
-at your option, any later version of Perl 5 you may have available.
+it under the same terms as Perl itself.
