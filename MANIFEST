@@ -1,8 +1,8 @@
-AutoTest.xs
 Changes
+Test-AutoGenerator.xs
 Makefile.PL
 MANIFEST
 ppport.h
 README
-t/AutoTest.t
-lib/AutoTest.pm
+t/Test-AutoGenerator.t
+lib/Test/AutoGenerator.pm

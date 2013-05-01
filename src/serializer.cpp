@@ -1,8 +1,8 @@
-#include "auto_test.h"
+#include "auto_generator.hpp"
 
 static VirtualCallStack *callstack = NULL;
 static VirtualCallStack *callstack_top = NULL;
-VirtualCallStack *new_VirtualCallStack(void)
+static VirtualCallStack *new_VirtualCallStack(void)
 {
     VirtualCallStack *callstack = (VirtualCallStack *)safe_malloc(MAX_CALLSTACK_SIZE * sizeof(VirtualCallStack));
     return callstack;
@@ -294,7 +294,7 @@ static char buf[32] = {0};
         write_cwb("')");                                \
     } while (0)
 
-static char *FastSerializer_serializePerlObject(FastSerializer *fs, SV *v_)
+char *FastSerializer::serialize(SV *v_)
 {
     int callstack_idx = 0;
     static void *jmp_table[17] = {
@@ -404,11 +404,8 @@ static char *FastSerializer_serializePerlObject(FastSerializer *fs, SV *v_)
     return cwb;
 }
 
-FastSerializer *new_FastSerializer(void)
+FastSerializer::FastSerializer(void)
 {
-    callstack = new_VirtualCallStack();
+    callstack = new VirtualCallStack();
     callstack_top = callstack;
-    FastSerializer *fs = safe_malloc(sizeof(FastSerializer));
-    fs->serialize = FastSerializer_serializePerlObject;
-    return fs;
 }

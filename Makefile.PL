@@ -1,19 +1,23 @@
-use ExtUtils::MakeMaker;
-WriteMakefile(
-    NAME              => 'AutoTest',
-    VERSION_FROM      => 'lib/AutoTest.pm', # finds $VERSION
-    PREREQ_PM         => {},
-    LICENSE           => 'perl',
-    OBJECT            => join(" ", map {$_.'$(OBJ_EXT)'} qw(AutoTest serializer hash util)),
-    ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
-      (ABSTRACT_FROM  => 'lib/AutoTest.pm', # retrieve abstract from module
-       AUTHOR         => 'Masaaki Goshima <goccy54@gmail.com>',
-      ) : ()),
-    ($ExtUtils::MakeMaker::VERSION gt '6.46' ?
-    ('META_MERGE'  => {resources => {
-                        license     => 'http://dev.perl.org/licenses/',
-                        repository  => 'https://github.com/goccy/AutoTest',
-                       },
-                      }) : ()),
-    INC               => '-I.',
-);
+use strict;
+use warnings;
+use inc::Module::Install;
+use Module::Install::XSUtil; # for co-developpers
+use constant DEBUG => 1;
+
+use_ppport 3.19;
+all_from 'lib/Test/AutoGenerator.pm';
+requires_cplusplus;
+cc_warnings;
+cc_src_paths qw(src);
+cc_include_paths qw(include);
+cc_define qw();
+makemaker_args->{CC} = 'g++';
+makemaker_args->{LD} = 'g++';
+makemaker_args->{LDLOADLIBS} .= ' -liconv';
+my @ignore_warnings_options = qw(unused-variable unused-parameter);
+makemaker_args->{CCFLAGS} .= join('', map { ' -Wno-' . $_ } @ignore_warnings_options);
+if (DEBUG) {
+    makemaker_args->{OPTIMIZE} = '-O0';
+    makemaker_args->{CCFLAGS} = '-g3 ' . makemaker_args->{CCFLAGS};
+}
+WriteAll(check_nmake => 0);
