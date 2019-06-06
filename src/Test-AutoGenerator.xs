@@ -102,7 +102,12 @@ static char *get_serialized_argument(pTHX_ int cxix, const char *caller_name, co
 	const bool hasargs = (PL_op->op_flags & OPf_STACKED) != 0;
 	if (!hasargs) return NULL;
 	int i = 0;
-	AV *argarray = PL_curstackinfo->si_cxstack[cxix].cx_u.cx_blk.blk_u.blku_sub.argarray;
+        PERL_CONTEXT *cx = &cxstack[cxix];
+#if PERL_VERSION < 22 || defined USE_CPERL
+	AV *argarray = cx->blk_sub.argarray;
+#else
+        AV *argarray = MUTABLE_AV(PAD_SVl(0));
+#endif
 	if (!argarray || (PerlType)SvTYPE(argarray) != TYPE_Array) return NULL;
 	int argc = argarray->sv_any->xav_fill;//av_len((AV *)argarray);
 	SV **a = argarray->sv_u.svu_array;
