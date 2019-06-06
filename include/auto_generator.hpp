@@ -48,7 +48,7 @@ typedef enum {
 
 typedef enum {
 	TYPE_Null = SVt_NULL,
-	TYPE_Bind = SVt_BIND,
+	/*TYPE_Bind = SVt_BIND,*/
 	TYPE_Int = SVt_IV,
 	TYPE_Double = SVt_NV,
 	TYPE_String = SVt_PV,
